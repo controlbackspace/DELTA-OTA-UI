@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
-from ._enums import CompressionType, StagedPatchState
+from .enums import CompressionType, StagedPatchState
 
 Bytes32 = bytes  # SHA-256 digest; exactly 32 bytes at runtime
 

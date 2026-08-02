@@ -2,7 +2,7 @@
 import sys
 sys.path.insert(0, ".")
 
-from secureota.gateway.domain import (
+from secureota.domain import (
     CompressionType,
     ReleaseManifest,
     StagedPatch,

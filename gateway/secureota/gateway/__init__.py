@@ -1,1 +1,0 @@
-# secureota.gateway
