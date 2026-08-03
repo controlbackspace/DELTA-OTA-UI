@@ -2,72 +2,78 @@
 pragma solidity ^0.8.20;
 
 contract DeltaOTA {
-    // Struct para uniform sa Phase 3 Edge Gateway polling
+    // Struct tailored for Phase 3 Edge Gateway polling and gas efficiency
     struct FirmwareRelease {
-        string version; // e.g. "v1.1"
-        bytes32 goldenHash; // SHA-256 hash ng delta patch galing sa Phase 1 GUI
-        string ipfsUrl; // URL kung saan idi-download ng Edge Gateway yung patch
-        uint8 approvalCount; // Counter ng nag-approve na authorized developers
-        bool isLive; // Mag-m-true lang 'to 'pag naabot na yung M-of-N threshold (2 signatures)
-        bool isRevoked; // Emergency Kill-Switch flag
+        bytes32 version; // e.g., "v1.1" stored as bytes32 for fixed storage slot allocation
+        bytes32 goldenHash; // SHA-256 hash of the delta patch generated from the Developer Console
+        string ipfsUrl; // Payload hosting URL for Edge Gateway retrieval
+        uint8 approvalCount; // Counter for authorized developer signatures
+        bool isLive; // State flag indicating M-of-N threshold (2 signatures) has been reached
+        bool isRevoked; // Emergency Kill Switch flag
     }
 
     // State storage mappings
-    mapping(string version=> FirmwareRelease) public releases; // Maps version string -> FirmwareRelease struct
-    mapping(string version => mapping(address developerAddress=> bool)) public hasSigned; // Maps version string -> dev address -> has standard approval status
-    mapping(address developerAddress => bool) public authorizedDevelopers; // Whitelist mapping para sa active developers
+    mapping(bytes32 => FirmwareRelease) public releases; // Maps version -> FirmwareRelease struct
+    mapping(bytes32 => mapping(address => bool)) public hasSigned; // Maps version -> dev address -> signature status
+    mapping(address => bool) public authorizedDevelopers; // Whitelist mapping for active developers
 
-    // Administrative at Multi-sig variables (Fixed at 3 Devs, 2 Threshold)
-    uint8 public constant thresholdM = 2; // Minimum 2 signatures na kailangan para maging Live
-    uint8 public constant totalDevelopersN = 3; // Total 3 registered developers
+    // Administrative and Multi-signature variables (Fixed at 3 Devs, 2 Threshold)
+    uint8 public constant thresholdM = 2; // Minimum signatures required for Live status
+    uint8 public constant totalDevelopersN = 3; // Total registered developers
 
-    // Events para sa polling ng Phase 3 Edge Gateway
+    // Events for Phase 3 Edge Gateway telemetry
     event DeveloperStatusUpdated(address indexed developer, bool status);
     event ReleaseProposed(
-        string version,
+        bytes32 version,
         bytes32 goldenHash,
         string ipfsUrl,
         address indexed proposer
     );
     event ReleaseApproved(
-        string version,
+        bytes32 version,
         address indexed approver,
         uint8 currentApprovals
     );
-    event ReleasePromotedToLive(string version);
-    event ReleaseRevoked(string version, address indexed revoker);
+    
+    // Optimized event: Broadcasts all metadata so the Gateway does not need a secondary getter call
+    event ReleasePromotedToLive(
+        bytes32 version, 
+        bytes32 goldenHash, 
+        string ipfsUrl
+    );
+    
+    event ReleaseRevoked(bytes32 version, address indexed revoker);
 
-    // Modifier para macheck kung nasa authorizedDevelopers mapping ang wallet address from Phase 1
+    // Modifier to enforce Zero Trust access control based on the developer whitelist
     modifier onlyAuthorized() {
         require(
             authorizedDevelopers[msg.sender],
-            "This is not an authorized developer"
+            "Unauthorized: Caller is not a registered developer"
         );
         _;
     }
 
-    // Check muna kung na-propose na talaga yung version sa registry bago i-process
-    modifier releaseExists(string memory version) {
+    // Modifier to verify the proposal exists in the registry prior to state transitions
+    modifier releaseExists(bytes32 version) {
         require(
-            bytes(releases[version].version).length > 0,
-            "Version does not exist"
+            releases[version].version != bytes32(0),
+            "Registry Error: Firmware version does not exist"
         );
         _;
     }
 
-    // Constructor: the concept is i-initialize ang admin at ililist kagad yung 3 authorized developers
-    // idedeclare na kaagad na 3 devs ang papasok sa system, tama ba?
+    // Constructor initializes the registry with a fixed array of authorized developers
     constructor(address[] memory initialDevelopers) {
         require(
             initialDevelopers.length == 3,
-            "Exactly 3 initial developers required"
+            "Initialization Error: Exactly 3 initial developers required"
         );
 
-        // Loop para ma-populate sa blockchain storage yung 3 developer addresses
+        // Populate the blockchain storage with the developer addresses
         for (uint256 i = 0; i < initialDevelopers.length; i++) {
             address dev = initialDevelopers[i];
-            require(dev != address(0), "Invalid address");
-            require(!authorizedDevelopers[dev], "Duplicate developer address");
+            require(dev != address(0), "Initialization Error: Invalid zero address");
+            require(!authorizedDevelopers[dev], "Initialization Error: Duplicate developer address");
 
             authorizedDevelopers[dev] = true;
 
@@ -75,18 +81,18 @@ contract DeltaOTA {
         }
     }
 
-    // Step 1: submission ng bagong firmware release proposal galing sa Phase 1 GUI
+    // Step 1: Submission of a new firmware release proposal from the Developer Console
     function proposeRelease(
-        string calldata version,
+        bytes32 version,
         bytes32 goldenHash,
         string calldata ipfsUrl
     ) external onlyAuthorized {
-        // Iwas duplicate version entries
+        // Prevent duplicate version entries to maintain ledger integrity
         require(
-            bytes(releases[version].version).length == 0,
-            "Release version already exists"
+            releases[version].version == bytes32(0),
+            "Registry Error: Release version already exists"
         );
-        require(goldenHash != bytes32(0), "Golden Hash cannot be empty");
+        require(goldenHash != bytes32(0), "Validation Error: Golden Hash cannot be empty");
 
         releases[version] = FirmwareRelease({
             version: version,
@@ -97,56 +103,58 @@ contract DeltaOTA {
             isRevoked: false
         });
 
-        // I-mark na nag-sign na si proposer para 'di na siya maka-double vote sa approveRelease()
+        // Record the proposer's signature to prevent double-voting in approveRelease()
         hasSigned[version][msg.sender] = true;
 
         emit ReleaseProposed(version, goldenHash, ipfsUrl, msg.sender);
         emit ReleaseApproved(version, msg.sender, 1);
     }
 
-    // Step 2: Pag-sign/approve ng pangalawang authorized developer para maabot ang 2/3 threshold
+    // Step 2: Multi-signature approval to reach the required M-of-N threshold
     function approveRelease(
-        string calldata version
+        bytes32 version
     ) external onlyAuthorized releaseExists(version) {
         FirmwareRelease storage release = releases[version];
 
-        // Safety checks bago i-count ang vote
-        require(!release.isRevoked, "Cannot approve a revoked release");
-        require(!release.isLive, "Release is already Live");
+        // Cryptographic and state validation checks prior to counting the signature
+        require(!release.isRevoked, "Governance Error: Cannot approve a revoked release");
+        require(!release.isLive, "Governance Error: Release is already Live");
         require(
             !hasSigned[version][msg.sender],
-            "Developer has already signed this release"
+            "Governance Error: Developer has already signed this release"
         );
 
-        // Record na nag-sign na 'tong dev wallet
+        // Record the cryptographic signature
         hasSigned[version][msg.sender] = true;
         release.approvalCount++;
 
         emit ReleaseApproved(version, msg.sender, release.approvalCount);
 
-        // State Transition: Kapag naabot na ang 2/3 signatures (approvalCount >= 2), magfi-flip na to Live
+        // State Transition: Promote to Live if the threshold is met
         if (release.approvalCount >= thresholdM) {
             release.isLive = true;
-            emit ReleasePromotedToLive(version);
+            emit ReleasePromotedToLive(version, release.goldenHash, release.ipfsUrl);
         }
     }
 
-    // Kill-Switch: Pwedeng i-trigger ng authorized dev kapag may na-detect na exploit sa patch
+    // Unilateral Kill Switch: Triggered upon detection of an exploit to revoke distribution
     function revokeRelease(
-        string calldata version
+        bytes32 version
     ) external onlyAuthorized releaseExists(version) {
         FirmwareRelease storage release = releases[version];
-        require(!release.isRevoked, "Release is already revoked");
+        require(!release.isRevoked, "Governance Error: Release is already revoked");
 
         release.isRevoked = true;
-        release.isLive = false; // Bawiin agad yung Live status para 'di na i-serve ng Gateway
+        
+        // Immediately strip Live status to halt Gateway distribution
+        release.isLive = false; 
 
         emit ReleaseRevoked(version, msg.sender);
     }
 
-    // Helper getter function para sa Python Web3.py polling ng Phase 3 Edge Gateway
+    // Helper function for the Python Edge Gateway to poll ledger state
     function getRelease(
-        string calldata version
+        bytes32 version
     ) external view returns (FirmwareRelease memory) {
         return releases[version];
     }
