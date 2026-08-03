@@ -7,11 +7,15 @@ __pycache__/
 # Build outputs
 dist/
 build/
+release/
+!desktop/build/
+!desktop/build/icon.png
 *.bin
 *.patch
 
 # Runtime & build artifacts
 artifacts/
+setup.log
 
 # IDE & OS
 .DS_Store

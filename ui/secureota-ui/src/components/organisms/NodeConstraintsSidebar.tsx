@@ -3,6 +3,7 @@ import { Cpu, CloudUpload, Hash, AlertTriangle, CheckCircle2 } from "lucide-reac
 import { CodeBadge } from "../atoms/CodeBadge";
 import { DropZone } from "../molecules/DropZone";
 import { ResourceMetricMeter } from "../molecules/ResourceMatrix";
+import { formatFileSize } from "../../lib/utils";
 
 export interface NodeConstraintsSidebarProps {
   firmwareVersion: string;
@@ -16,8 +17,10 @@ export interface NodeConstraintsSidebarProps {
   goldenHash: string | null;
   deltaSizeKb: number | null;
   compressionRatio: string | null;
-  onUploadBase: () => void;
-  onUploadTarget: () => void;
+  baseFile: File | null;
+  targetFile: File | null;
+  onUploadBase: (file: File) => void;
+  onUploadTarget: (file: File) => void;
 }
 
 export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
@@ -32,6 +35,8 @@ export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
   goldenHash,
   deltaSizeKb,
   compressionRatio,
+  baseFile,
+  targetFile,
   onUploadBase,
   onUploadTarget,
 }) => {
@@ -112,15 +117,15 @@ export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
         <div className="mt-4 space-y-3">
           <DropZone
             label="Upload Base Binary (v1.0)"
-            filename="base_v1.0.bin"
-            filesize="1.2 MB"
+            filename={baseFile?.name ?? "base_v1.0.bin"}
+            filesize={baseFile ? formatFileSize(baseFile.size) : "1.2 MB"}
             isUploaded={baseUploaded}
             onUpload={onUploadBase}
           />
           <DropZone
             label="Upload Target Binary (v1.1)"
-            filename="update_v1.1.bin"
-            filesize="1.25 MB"
+            filename={targetFile?.name ?? "update_v1.1.bin"}
+            filesize={targetFile ? formatFileSize(targetFile.size) : "1.25 MB"}
             isUploaded={targetUploaded}
             onUpload={onUploadTarget}
           />
@@ -150,7 +155,7 @@ export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
             { label: "Target Binary (v1.1)", value: "1.250 MB", accent: "text-slate-300" },
             {
               label: "Generated Delta Patch",
-              value: deltaGenerated && deltaSizeKb ? `${deltaSizeKb}.0 KB` : "Pending...",
+              value: deltaGenerated && deltaSizeKb !== null ? `${deltaSizeKb.toFixed(1)} KB` : "Pending...",
               accent: deltaGenerated ? "text-cyan-400" : "text-slate-600",
             },
             {

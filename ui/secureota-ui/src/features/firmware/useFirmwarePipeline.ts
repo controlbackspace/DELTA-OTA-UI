@@ -1,8 +1,12 @@
 import { useState, useCallback } from "react";
 import type { LogEntry } from "../../components/organisms/SystemsLogTerminal";
 import type { LedgerRelease } from "../../components/organisms/LedgerDeploymentsTable";
+import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
+import { formatFileSize } from "../../lib/utils";
 
 export type UpdateState = "idle" | "developer" | "blockchain" | "gateway" | "iot" | "success";
+
+export type BinaryKind = "base" | "target";
 
 export function useFirmwarePipeline() {
   const [updateState, setUpdateState] = useState<UpdateState>("idle");
@@ -18,6 +22,17 @@ export function useFirmwarePipeline() {
   
   // Active Action Indicators
   const [loadingStep, setLoadingStep] = useState<string | null>(null);
+
+  // Real binary files (desktop runtime — Electron bridge)
+  const [baseFile, setBaseFile] = useState<File | null>(null);
+  const [targetFile, setTargetFile] = useState<File | null>(null);
+
+  // Build output (desktop runtime — Python release builder via IPC)
+  const [goldenHash, setGoldenHash] = useState<string | null>(null);
+  const [patchUrl, setPatchUrl] = useState<string | null>(null);
+  const [ipfsCid, setIpfsCid] = useState<string | null>(null);
+  const [deltaSizeKb, setDeltaSizeKb] = useState<number | null>(null);
+  const [compressionRatio, setCompressionRatio] = useState<string | null>(null);
 
   // Initial Logs
   const [logs, setLogs] = useState<LogEntry[]>([
@@ -73,14 +88,73 @@ export function useFirmwarePipeline() {
     setLoadingStep(null);
   };
 
+  const handleLoadBinaryFile = async (file: File, kind: BinaryKind) => {
+    if (kind === "base") {
+      setBaseFile(file);
+      setBaseUploaded(true);
+    } else {
+      setTargetFile(file);
+      setTargetUploaded(true);
+    }
+    addLog(`[Firmware Mgr] Staging ${kind} binary ${file.name} — ${formatFileSize(file.size)}`, "info");
+    await delay(400);
+    addLog(`[Firmware Mgr] ${kind === "base" ? "Base" : "Target"} binary staged successfully.`, "success");
+  };
+
   const handleGenerateDelta = async () => {
     if (!baseUploaded || !targetUploaded || loadingStep) return;
     setLoadingStep("delta");
     addLog("[Delta Engine] Computing binary diff using bsdiff4 algorithm...", "info");
+
+    const bridge = getDesktopBridge();
+
+    // Desktop runtime: real Python engine via IPC
+    if (bridge && baseFile && targetFile) {
+      try {
+        const result = await bridge.generatePatch(
+          bridge.getPathForFile(baseFile),
+          bridge.getPathForFile(targetFile),
+          deriveVersionTag(targetFile.name)
+        );
+        addLog(
+          `[Delta Engine] Delta patch generated — ${(result.patch_size / 1024).toFixed(1)} KB (${(result.compression_ratio * 100).toFixed(1)}% reduction)`,
+          "success"
+        );
+        addLog(`[SHA-256] Golden Hash computed: ${result.golden_hash}`, "hash");
+        setGoldenHash(result.golden_hash);
+        setPatchUrl(result.patch_url);
+        setIpfsCid(result.ipfs_cid);
+        setDeltaSizeKb(+(result.patch_size / 1024).toFixed(1));
+        setCompressionRatio(`${(result.compression_ratio * 100).toFixed(1)}% Reduction`);
+        setReleases((prev) =>
+          prev.map((r) =>
+            r.version === result.version_tag ? { ...r, goldenHash: result.golden_hash } : r
+          )
+        );
+        setDeltaGenerated(true);
+      } catch (err) {
+        addLog(`[Delta Engine] ${err instanceof Error ? err.message : "Build failed"}`, "error");
+      } finally {
+        setLoadingStep(null);
+      }
+      return;
+    }
+
+    // Desktop runtime without real binaries: nudge the operator
+    if (bridge) {
+      addLog("[Delta Engine] Drop real base + target binaries into the sidebar first.", "warning");
+      setLoadingStep(null);
+      return;
+    }
+
+    // Browser fallback: simulation mode (unchanged behavior)
     await delay(1200);
     addLog("[Delta Engine] Delta patch generated — 45 KB (96.2% reduction)", "success");
     await delay(600);
     addLog("[SHA-256] Golden Hash computed: 0x8e5b0d3c...8e0f", "hash");
+    setGoldenHash("0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f");
+    setDeltaSizeKb(45);
+    setCompressionRatio("96.2% Reduction");
     setDeltaGenerated(true);
     setLoadingStep(null);
   };
@@ -89,8 +163,15 @@ export function useFirmwarePipeline() {
     if (!deltaGenerated || loadingStep) return;
     setLoadingStep("url");
     addLog("[Hosting] Configuring IPFS gateway URL for delta payload...", "info");
-    await delay(800);
-    addLog("[Hosting] ipfs://QmXf7kp...2bCd — Pinned & accessible.", "success");
+
+    if (getDesktopBridge() && ipfsCid) {
+      await delay(600);
+      addLog(`[Hosting] ${ipfsCid} — Pinned & accessible.`, "success");
+      if (patchUrl) addLog(`[Hosting] Download: ${patchUrl}`, "info");
+    } else {
+      await delay(800);
+      addLog("[Hosting] ipfs://QmXf7kp...2bCd — Pinned & accessible.", "success");
+    }
     setUrlConfigured(true);
     setLoadingStep(null);
   };
@@ -174,7 +255,15 @@ export function useFirmwarePipeline() {
     loadingStep,
     logs,
     releases,
+    baseFile,
+    targetFile,
+    goldenHash,
+    patchUrl,
+    ipfsCid,
+    deltaSizeKb,
+    compressionRatio,
     handleLoadBinaries,
+    handleLoadBinaryFile,
     handleGenerateDelta,
     handleConfigureUrl,
     handleConnectWallet,
@@ -182,7 +271,5 @@ export function useFirmwarePipeline() {
     handleExecuteKillSwitch,
     handleApproveUpdate,
     simulateUpdate,
-    setBaseUploaded,
-    setTargetUploaded,
   };
 }

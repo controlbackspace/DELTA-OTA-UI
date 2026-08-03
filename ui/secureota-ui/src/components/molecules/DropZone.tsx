@@ -7,7 +7,7 @@ export interface DropZoneProps {
   filename: string;
   filesize: string;
   isUploaded: boolean;
-  onUpload: () => void;
+  onUpload: (file: File) => void;
 }
 
 export const DropZone: React.FC<DropZoneProps> = ({
@@ -30,7 +30,14 @@ export const DropZone: React.FC<DropZoneProps> = ({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    onUpload();
+    const file = e.dataTransfer.files?.[0];
+    if (file) onUpload(file);
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) onUpload(file);
+    e.target.value = "";
   };
 
   return (
@@ -51,7 +58,7 @@ export const DropZone: React.FC<DropZoneProps> = ({
         type="file"
         accept=".bin"
         className="hidden"
-        onChange={() => onUpload()}
+        onChange={handleFileChange}
       />
 
       <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-3 font-sans font-medium">

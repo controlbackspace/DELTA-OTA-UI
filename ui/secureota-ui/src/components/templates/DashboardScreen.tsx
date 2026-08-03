@@ -67,11 +67,13 @@ export const DashboardScreen: React.FC = () => {
           baseUploaded={pipeline.baseUploaded}
           targetUploaded={pipeline.targetUploaded}
           deltaGenerated={pipeline.deltaGenerated}
-          goldenHash="0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f"
-          deltaSizeKb={45}
-          compressionRatio="96.2% Reduction"
-          onUploadBase={() => pipeline.setBaseUploaded(true)}
-          onUploadTarget={() => pipeline.setTargetUploaded(true)}
+          goldenHash={pipeline.goldenHash}
+          deltaSizeKb={pipeline.deltaSizeKb}
+          compressionRatio={pipeline.compressionRatio}
+          baseFile={pipeline.baseFile}
+          targetFile={pipeline.targetFile}
+          onUploadBase={(file) => pipeline.handleLoadBinaryFile(file, "base")}
+          onUploadTarget={(file) => pipeline.handleLoadBinaryFile(file, "target")}
         />
 
         {/* Center Main Stage */}

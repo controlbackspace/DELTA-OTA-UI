@@ -1,0 +1,260 @@
+DELTA-OTA-UI - CHANGE LOG
+=========================
+
+1. PHASE B - RELEASE BUILDER (backend)
+   - gateway/secureota/release_builder/core.py        (NEW - bsdiff4 delta + SHA-256 golden hash)
+   - gateway/secureota/release_builder/__init__.py    (NEW)
+   - gateway/make_release.py                          (NEW - CLI: base.bin target.bin version_tag)
+   - gateway/requirements.txt                         (NEW - bsdiff4==1.2.6)
+
+2. PROJECT RESTRUCTURING
+   - "Thesis Po/" absorbed & deleted (was repo root)
+     * delta.sol                 -> contracts/DeltaOTA.sol
+     * gateway.py, main_gateway.py, coap_server.py, coap_client.py,
+       blockchain_poller.py, security_engine.py -> gateway/secureota/gateway_runtime/
+     * dummy_patch.bin, encrypted_patch.bin, gateway_state.json -> gateway/artifacts/
+     * tempCodeRunnerFile.py     (DELETED - VS Code junk)
+   - gateway/secureota/gateway/domain/ -> gateway/secureota/domain/
+     * _models.py -> models.py, _enums.py -> enums.py, __init__.py merged
+     * quick_test.py import updated: secureota.gateway.domain -> secureota.domain
+   - gateway/v1.0.bin, v1.1.bin  -> gateway/fixtures/
+   - gateway/secureota/artifacts (empty dir) DELETED
+
+3. HARDCODED PATH FIXES (moved gateway scripts)
+   - C:/Users/jajai/Desktop/Thesis Po/... refs replaced with
+     Path(__file__)-relative ARTIFACT_DIR lookups in gateway.py,
+     security_engine.py, main_gateway.py, coap_server.py
+
+4. UI CLEANUP (ui/secureota-ui)
+   - src/lib/util.ts             (DELETED - dead duplicate of utils.ts)
+   - src/assets/*                (DELETED - unreferenced)
+   - public/icons.svg            (DELETED - unreferenced)
+
+5. .gitignore
+   - added artifacts/            (runtime + build output)
+
+
+6. DESKTOP MIGRATION (ELECTRON) - web app -> locally executed desktop app
+   -----------------------------------------------------------------------
+   MOTIVATION
+   - Remove the web attack surface: no remote server, no browser sandbox
+     restrictions, cryptographic work happens locally on the developer machine.
+
+   DECISIONS (locked)
+   - Dev-mode Electron only (no electron-builder installer yet).
+   - Renderer wiring is ADDITIVE only: zero changes to UI/UX, components,
+     or the Atomic Architecture (atoms -> molecules -> organisms -> templates).
+   - Phase 4 (WalletConnect) DEFERRED until Phase A (contract deployment).
+   - make_release.py was edited (approved): --json flag + version_tag sanitize.
+
+   NEW PROJECT: desktop/ (repo root, fully separate from ui/)
+   - package.json               electron dev-dep only; "main": "dist/main.js"
+   - tsconfig.json              TS ~6.0.2, Node16 modules, strict, CJS emit
+   - src/main.ts                COMPOSITION ROOT - app lifecycle, dependency
+                                wiring, IPC handler registration only
+   - src/window.ts              BrowserWindow factory (no business logic)
+   - src/preload.ts             contextBridge -> window.desktopAPI (3 narrow
+                                methods, no Node access exposed)
+   - src/contracts/ipc.ts       channel name constants
+   - src/contracts/release.ts   GeneratePatchRequest / ReleaseResult types
+   - src/services/paths.ts      PURE path resolution + binary validation
+   - src/services/pythonRunner.ts  PythonRunner class: spawn (hidden, no shell),
+                                stdout capture, JSON parse, URL normalization
+   - SOLID mapping: main = composition root (SRP); pythonRunner owns process
+     lifecycle; paths.ts is pure (testable); renderer depends on the narrow
+     DesktopBridge interface (Dependency Inversion); preload is the only
+     Electron surface (Interface Segregation). No logic in preload/window.
+
+   IPC CONTRACT (single source of truth: desktop/src/contracts/)
+   - "patch:generate"  renderer -> main  {basePath, targetPath, versionTag}
+                       -> ReleaseResult JSON parsed from python --json stdout
+   - "dialog:pick-bin" renderer -> main  -> string | null (native file dialog)
+   - getPathForFile(file) preload helper (webUtils) - keeps drag & drop working
+   - Security: contextIsolation: true, sandbox: true, nodeIntegration: false;
+     spawn with args array (shell: false) -> no command injection;
+     version_tag sanitized client-side + Python-side before filename use.
+
+   PYTHON ENGINE CHANGES (gateway/make_release.py)
+   - NEW --json flag: prints a single JSON object to stdout ONLY
+     {version_tag, golden_hash, patch_size, compression_ratio, patch_url,
+      patch_path}; warnings/errors go to stderr.
+   - NEW version_tag sanitization: [^A-Za-z0-9._-] -> "_" before it reaches
+     the patch_{tag}.bin filename (path-traversal guard). Empty after
+     sanitization aborts with exit code 1.
+   - Human-readable terminal output is unchanged when --json is absent.
+
+   URL NORMALIZATION (adapter at the boundary - desktop/pythonRunner.ts)
+   - core.py's patch_url "http://localhost:8000/files/patch.bin" is a stale
+     Phase B URL (the FastAPI server no longer exists). The desktop adapter
+     rewrites it to http://local-test-server/patch_{tag}.bin - consistent with
+     blockchain_poller.py's mock ipfsUrl format for Phase 3 polling.
+   - mock ipfs_cid synthesized: Qm{first 8 hash hex}{tag digits} when the
+     CLI does not provide one.
+
+   RENDERER ADDITIVE WIRING (ui/secureota-ui - no visual/architecture change)
+   - src/lib/desktop.ts         (NEW) DesktopBridge interface + getDesktopBridge()
+                                (null in plain browser) + deriveVersionTag()
+   - src/lib/utils.ts           (EDITED) + formatFileSize() helper
+   - DropZone.tsx               onUpload(file) now carries the real File;
+                                visuals unchanged
+   - useFirmwarePipeline.ts     holds baseFile/targetFile + result state;
+                                handleGenerateDelta: desktop + real files ->
+                                real IPC call; desktop without files -> warning
+                                log; browser -> EXACT previous simulation
+   - NodeConstraintsSidebar.tsx prop plumbing only: real filenames/sizes shown
+                                when files are dropped, previous fake strings
+                                otherwise; golden hash / delta size / ratio now
+                                come from pipeline state
+   - DashboardScreen.tsx        passes pipeline state down; no layout/styling
+                                changes
+   - NOTE: no fetch()/axios/api.ts exists anywhere - the "purge network
+     requests" step of the roadmap was a no-op (verified by grep).
+
+   PHASE 5 - LOCAL FILE MANAGEMENT (already satisfied, now defined)
+   - make_release.py writes artifacts/patch_{tag}.bin (gateway/artifacts/),
+     which the CoAP gateway already reads from disk (Path(__file__)-relative).
+   - ipfsUrl for the contract payload = http://local-test-server/patch_{tag}.bin
+     (mock, consistent with blockchain_poller.py).
+
+   PHASE 4 - WALLETCONNECT (DEFERRED - documented future work)
+   - Blocked on Phase A: DeltaOTA.sol exists but is not compiled/deployed;
+     no contract address or ABI exists yet.
+   - Planned: @reown/appkit (successor of @walletconnect/modal) + ethers v6,
+     a projectId from cloud.walletconnect.com, a new QR organism component
+     (additive, atomic-consistent), async session listeners.
+   - CORRECT payload (from contracts/DeltaOTA.sol:79):
+       proposeRelease(string version, bytes32 goldenHash, string ipfsUrl)
+     - version is a STRING ("v1.1"), NOT bytes32 (roadmap draft was wrong)
+     - goldenHash must be 0x-prefixed hex (make_release.py currently emits
+       unprefixed hex - convert before building the payload)
+
+   RUN INSTRUCTIONS (dev mode, two terminals)
+   - Terminal 1 (renderer):
+       cd ui/secureota-ui && npm run dev          (vite dev server on 5173)
+   - Terminal 2 (desktop shell):
+       cd desktop && npm install && npm run build
+       $env:VITE_DEV_SERVER_URL="http://localhost:5173"; npm start
+     (without the env var, the shell loads ui/secureota-ui/dist/index.html)
+   - In the Electron window: drag two .bin files into the sidebar DropZones,
+     click Generate Delta -> python runs hidden, real golden hash + metrics
+     appear; terminal log shows the parsed JSON result.
+   - Browser fallback (no Electron): pipeline runs the original simulation.
+
+   VERIFICATION PERFORMED
+   - python make_release.py ... --json            -> clean single-line JSON
+   - traversal tag "..\evil"                      -> sanitized to ".._evil"
+   - PythonRunner (node)                          -> spawn + parse + normalize OK
+   - quick_test.py                                -> ALL CHECKS PASSED
+   - ui: npm run lint + npm run build             -> clean
+   - electron . + vite dev                        -> both processes stable
+
+
+7. OFFLINE DESKTOP-IFICATION + INSTALLER
+   - ui/secureota-ui/vite.config.ts (EDITED) + base: './' - the built
+     index.html referenced /assets/... (root-absolute), which breaks under
+     file:// and left a blank window: the ONLY working mode was the localhost
+     dev server, making the app feel like "a website in a window". Relative
+     paths fix offline loading entirely.
+   - desktop/scripts/bundle-renderer.cjs (NEW) - runs vite build in the UI
+     project, then copies dist/ -> desktop/dist/renderer/. One command builds
+     the whole app: `npm run build:app` (tsc + bundle). `npm start` now loads
+     the bundled UI from disk - no server, no second terminal.
+   - desktop/package.json (EDITED) - scripts build:app / bundle:ui / dist;
+     electron-builder config: productName SecureOTA, appId, files dist/**/*,
+     extraResources ships gateway/ (minus .venv, artifacts, fixtures, pycache)
+     into resources/gateway, NSIS per-user installer with dir choice.
+   - desktop/src/services/pythonLocator.ts (NEW) - PythonLocator resolves the
+     gateway runtime for dev AND installed layouts (strategy order: env
+     SECUREOTA_GATEWAY_DIR -> resources/gateway if packaged -> repo gateway;
+     python: SECUREOTA_PYTHON -> venv python.exe -> system python). Injectable
+     resourcesPath for testability.
+   - desktop/src/main.ts (EDITED) - uses PythonLocator; early validation with
+     clear error dialogs (missing release builder / missing renderer bundle);
+     VITE_DEV_SERVER_URL is now strictly an opt-in dev convenience.
+   - desktop/src/services/paths.ts (EDITED) - renderer resolves to the bundled
+     dist/renderer/index.html (works in dev AND inside app.asar).
+   - FIXED SANDBOX BUG: sandboxed preloads cannot require() local modules, so
+     preload.js failed with "module not found: ./contracts/ipc" and
+     window.desktopAPI NEVER existed in the renderer (generate delta silently
+     fell back to browser simulation). preload.ts now inlines the channel
+     constants (comment cross-references contracts/ipc.ts as authority).
+   - gateway/setup-gateway.bat (NEW) - one-shot venv + pip install, works both
+     in the repo and in the installed app's resources\gateway folder.
+   - desktop/build/icon.png (NEW) - generated placeholder app icon (dark bg +
+     blue delta triangle); electron-builder converts to .ico for NSIS.
+   - ui/secureota-ui/index.html (EDITED) - title "SecureOTA - Firmware Console"
+     (window title bar).
+   - .gitignore (EDITED) - + release/, + !desktop/build/icon.png.
+   - README.md (EDITED) - one-command run flow, installer instructions,
+     gateway runtime lookup order, packaged-mode setup, new smoke tests.
+
+   INSTALLER
+   - npm run dist -> desktop/release/"SecureOTA Setup 0.1.0.exe" (NSIS,
+     per-user, ~95 MB). Installed app = SecureOTA.exe + resources/gateway
+     (Python sources + setup-gateway.bat). Target machine still needs
+     Python 3.12 installed (setup-gateway.bat creates resources\gateway\.venv).
+   - WalletConnect (Phase 4) will still need internet at runtime; the
+     installer only removes the SERVER dependency, not connectivity needs.
+
+   VERIFICATION PERFORMED
+   - offline launch (no VITE_DEV_SERVER_URL, no server): app stable 12s+,
+     clean log, no preload error
+   - scripts/preload-smoke.cjs (NEW): sandboxed window exposes generatePatch /
+     pickBinary / getPathForFile -> PRELOAD SMOKE OK
+   - scripts/package-smoke.cjs (NEW): packaged-layout lookup + end-to-end
+     make_release run against resources\gateway venv -> OK
+   - packaged SecureOTA.exe: 4-process tree, real window, title correct,
+     stable; installer .exe produced
+   - known dev-only CSP warning (no meta CSP yet) - packaged app is quiet;
+     strict CSP noted as future work
+
+8. DEVELOPER SETUP (one-command)
+   - setup.ps1 (NEW, repo root) - idempotent bootstrap for fresh developers:
+     1. toolchain check: py -3.12 / node >= 20 / npm (clear instructions when
+        missing; -InstallTools flag winget-installs Python.Python.3.12 and
+        OpenJS.NodeJS.LTS, then refreshes PATH from the registry)
+     2. gateway: creates .venv (py -3.12, reused if present), pip install
+        -r requirements.txt, runs quick_test.py as a smoke gate
+     3. ui: npm install (skipped when node_modules exists)
+     4. desktop: npm install + npm run build:app (tsc + renderer bundle)
+     5. -EdgeGateway flag: additionally installs web3 cryptography aiocoap
+        (CoAP runtime - not needed for the desktop app)
+   - setup.bat (NEW) - double-click shim: powershell -ExecutionPolicy Bypass
+     -File setup.ps1 %* (flags pass through, exit code preserved)
+   - .gitignore (EDITED) - + setup.log
+   - README.md (EDITED) - "Quick start (one command)" section at top with
+     flag table; repo layout updated; pip-cache quirk note extended to the
+     edge-gateway deps (pydantic_core hit the same corrupt-cache wheel issue
+     on this machine and was fixed with --no-cache-dir --force-reinstall)
+
+   VERIFICATION PERFORMED
+   - .\setup.ps1                     -> all steps OK, exit 0 (fast path: reuses
+                                       venv + node_modules, rebuilds renderer)
+   - setup.bat shim                  -> exit 0, same output
+   - .\setup.ps1 -EdgeGateway        -> exit 0; web3/cryptography/aiocoap
+                                       import cleanly after the cache fix
+
+9. PROJECT README
+   - README.md (NEW, repo root) - comprehensive setup/run guide:
+     prerequisites (Python 3.12, Node 26.x, npm), gateway/ui/desktop setup,
+     4 run modes (desktop app / browser simulation / CLI --json / installer),
+     edge gateway runtime, quality gates, architecture + security notes,
+     Phase 4 deferral payload, known quirks.
+
+10. NOTES
+   - ALL documentation lives in documentations/: README.md (repo guide),
+     changes.txt (this change log), PROJECT_CONTEXT.md (thesis context +
+     roadmap). setup.ps1/setup.bat stay at the repo root (dev tooling).
+   - artifacts/, fixtures/*.bin, .venv, desktop/dist, desktop/node_modules,
+     desktop/release/, setup.log are gitignored (not pushed)
+   - pre-existing quirk: quick_test.py prints unicode arrows - fails on cp1252
+     console; run with $env:PYTHONIOENCODING="utf-8"
+   - bsdiff4 install quirk: corrupt pip cache once served wrong wheel;
+     reinstall with --no-cache-dir if import fails
+   - desktop/ uses Python 3.12 venv at gateway/.venv (bsdiff4 has no cp314
+     wheel for the default Python 3.14)
+   - ReleaseResult type is mirrored between desktop/src/contracts/release.ts
+     and ui/src/lib/desktop.ts (projects are separate TS roots); ipc.ts is the
+     authoritative definition
+   - Branch: all of the above pushed as feat-desktop-app (origin/feat-desktop-app);
+     refactor-project-restructure (local + remote) deleted after the move
