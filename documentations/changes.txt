@@ -123,7 +123,7 @@ DELTA-OTA-UI - CHANGE LOG
      a projectId from cloud.walletconnect.com, a new QR organism component
      (additive, atomic-consistent), async session listeners.
    - CORRECT payload (from contracts/DeltaOTA.sol:79):
-       proposeRelease(string version, bytes32 goldenHash, string ipfsUrl)
+       proposeRelease(bytes32 version, bytes32 goldenHash, string ipfsUrl)
      - version is a STRING ("v1.1"), NOT bytes32 (roadmap draft was wrong)
      - goldenHash must be 0x-prefixed hex (make_release.py currently emits
        unprefixed hex - convert before building the payload)

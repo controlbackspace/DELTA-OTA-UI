@@ -2,7 +2,7 @@ import asyncio
 import json
 from pathlib import Path
 from coap_server import start_coap_server
-from blockchain_poller import mock_fetch_smart_contract_state
+from blockchain_poller import BlockchainPoller
 from security_engine import fetch_and_verify_payload, encrypt_for_device, PRE_SHARED_KEY
 
 ARTIFACT_DIR = Path(__file__).resolve().parent.parent.parent / "artifacts"
@@ -10,9 +10,15 @@ DUMMY_PATCH = ARTIFACT_DIR / "dummy_patch.bin"
 ENCRYPTED_PATCH = ARTIFACT_DIR / "encrypted_patch.bin"
 STATE_FILE = ARTIFACT_DIR / "gateway_state.json"
 
+TARGET_VERSION = "v1.1"
+POLL_INTERVAL = 5
+
 ## Main Loop
 
 async def main_loop():
+
+    # The Web3 HTTP connection is established exactly once at boot
+    poller = BlockchainPoller()
 
     await start_coap_server()
 
@@ -30,14 +36,25 @@ async def main_loop():
     print(f"[Boot] Gateway loaded. Current version: {installed_version}")
 
     while True:
-        release_data = await mock_fetch_smart_contract_state()
+        release_data = await poller.fetch_firmware_release(TARGET_VERSION)
 
-        if release_data["isLive"] == True and release_data["version"] != installed_version:
+        # Zero Trust: if the ledger poll failed (node offline, RPC error),
+        # halt the gateway immediately instead of crashing.
+        if release_data is None:
+            print("[Gateway] FATAL: Ledger poll failed (Hardhat offline?). Halting gateway.")
+            return
+
+        # Zero Trust: never apply or serve a release that was revoked on-chain
+        if release_data["isRevoked"] is True:
+            print(f"[Gateway] FATAL: Release {TARGET_VERSION} has been revoked on-chain. Halting gateway.")
+            return
+
+        if release_data["isLive"] is True and release_data["version"] != installed_version:
             print(f"Success! New Update ({release_data['version']}) is Live.")
             
             isValid = await fetch_and_verify_payload(release_data["goldenHash"])
 
-            if isValid == True:
+            if isValid is True:
                 print("Verified! Moving to encryption!")
 
                 await encrypt_for_device(
@@ -54,10 +71,11 @@ async def main_loop():
                 print(f"[System] Gateway state updated to {installed_version}")
             else:
                 print("Hash Mismatch!")
-                continue
+                await asyncio.sleep(POLL_INTERVAL)
         else:
             
             print("[Gateway] No new updates found. Sleeping...")
-            await asyncio.sleep(5)
+            await asyncio.sleep(POLL_INTERVAL)
 
-asyncio.run(main_loop())
+if __name__ == "__main__":
+    asyncio.run(main_loop())
