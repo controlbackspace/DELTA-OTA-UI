@@ -15,10 +15,9 @@ class FirmwareResource(resource.Resource):
             return aiocoap.Message(payload=secure_bytes, code=aiocoap.CONTENT)
             
         except FileNotFoundError:
-            print("[CoAP] Error: Encrypted patch not found.")
-            return aiocoap.Message(code=aiocoap.NOT_FOUND)
-
-# We removed the infinite loop here because the main_gateway will handle keeping it alive
+            print("[CoAP] Blocked: no verified firmware on disk. Device is not authorized (4.01).")
+            return aiocoap.Message(code=aiocoap.UNAUTHORIZED)
+        
 async def start_coap_server():
     root = resource.Site()
     root.add_resource(['firmware'], FirmwareResource())

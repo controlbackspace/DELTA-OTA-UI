@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 from coap_server import start_coap_server
 from blockchain_poller import BlockchainPoller
-from security_engine import fetch_and_verify_payload, encrypt_for_device, PRE_SHARED_KEY
+from security_engine import SecurityEngine
 
 ARTIFACT_DIR = Path(__file__).resolve().parent.parent.parent / "artifacts"
 DUMMY_PATCH = ARTIFACT_DIR / "dummy_patch.bin"
@@ -12,6 +12,7 @@ STATE_FILE = ARTIFACT_DIR / "gateway_state.json"
 
 TARGET_VERSION = "v1.1"
 POLL_INTERVAL = 5
+PRE_SHARED_KEY = b"TEST_KEY_1234567"
 
 ## Main Loop
 
@@ -19,6 +20,9 @@ async def main_loop():
 
     # The Web3 HTTP connection is established exactly once at boot
     poller = BlockchainPoller()
+
+    # The security engine handles payload verification and encryption
+    engine = SecurityEngine()
 
     await start_coap_server()
 
@@ -46,18 +50,19 @@ async def main_loop():
 
         # Zero Trust: never apply or serve a release that was revoked on-chain
         if release_data["isRevoked"] is True:
+            ENCRYPTED_PATCH.unlink(missing_ok=True)
             print(f"[Gateway] FATAL: Release {TARGET_VERSION} has been revoked on-chain. Halting gateway.")
             return
 
         if release_data["isLive"] is True and release_data["version"] != installed_version:
             print(f"Success! New Update ({release_data['version']}) is Live.")
             
-            isValid = await fetch_and_verify_payload(release_data["goldenHash"])
+            isValid = engine.verify_firmware_integrity(release_data, str(DUMMY_PATCH))
 
             if isValid is True:
                 print("Verified! Moving to encryption!")
 
-                await encrypt_for_device(
+                engine.encrypt_payload(
                     DUMMY_PATCH, 
                     ENCRYPTED_PATCH, 
                     PRE_SHARED_KEY
@@ -71,6 +76,7 @@ async def main_loop():
                 print(f"[System] Gateway state updated to {installed_version}")
             else:
                 print("Hash Mismatch!")
+                ENCRYPTED_PATCH.unlink(missing_ok=True)
                 await asyncio.sleep(POLL_INTERVAL)
         else:
             
