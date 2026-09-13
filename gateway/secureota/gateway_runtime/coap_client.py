@@ -1,12 +1,14 @@
 import asyncio
 from aiocoap import Context, Message, GET
+from coap_server import get_lan_ip
 
 async def main():
     print("[Client] Booting mock ESP32...")
     
     protocol = await Context.create_client_context()
 
-    request = Message(code=GET, uri="coap://127.0.0.1/firmware")
+    server_ip = get_lan_ip()
+    request = Message(code=GET, uri=f"coap://{server_ip}/firmware")
 
     try:
         print(f"[Client] Sending GET request to {request.get_request_uri()}...")

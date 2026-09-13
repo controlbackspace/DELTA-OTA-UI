@@ -1,0 +1,17 @@
+[Unit]
+Description=Delta-OTA Edge Gateway (CoAP firmware + blockchain poller)
+After=network.target hardhat.service
+Wants=hardhat.service
+
+[Service]
+Type=simple
+User=__USER__
+Group=__GROUP__
+WorkingDirectory=__ROOT__/gateway/secureota/gateway_runtime
+ExecStart=__ROOT__/gateway/.venv/bin/python main_gateway.py
+EnvironmentFile=/etc/delta-gateway.env
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
