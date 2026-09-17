@@ -44,8 +44,9 @@ FAILURES = 0
 
 def reset_state():
     """Force the gateway to re-process TARGET_VERSION on the next cycle."""
-    STATE_FILE.write_text(json.dumps({"installed_version": "v1.1"}))
-    print("[Demo] Gateway state reset to v1.1.")
+    prior = "v1.1" if TARGET_VERSION != "v1.1" else "v1.0"
+    STATE_FILE.write_text(json.dumps({"installed_version": prior}))
+    print(f"[Demo] Gateway state reset to {prior} (target {TARGET_VERSION}).")
 
 
 async def start_server():
@@ -195,7 +196,10 @@ async def phase3_tamper():
     ctx = await start_server()
     try:
         gw = await run_gateway_once()
-        check("gateway outcome", gw, "UPDATED")
+        if not check("gateway outcome", gw, "UPDATED") or not ENCRYPTED_PATCH.exists():
+            print("    [Demo] Skipping tamper step: no verified patch on disk "
+                  "(gateway did not produce one this cycle).")
+            return False
 
         # Flip one byte of the authentication tag on disk.
         frame = bytearray(ENCRYPTED_PATCH.read_bytes())
