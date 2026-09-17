@@ -13,8 +13,8 @@ export function useFirmwarePipeline() {
   const [firmwareVersion] = useState("v1.0");
   
   // Pipeline Step Flags
-  const [baseUploaded, setBaseUploaded] = useState(true);
-  const [targetUploaded, setTargetUploaded] = useState(true);
+  const [baseUploaded, setBaseUploaded] = useState(false);
+  const [targetUploaded, setTargetUploaded] = useState(false);
   const [deltaGenerated, setDeltaGenerated] = useState(false);
   const [urlConfigured, setUrlConfigured] = useState(false);
   const [walletConnected, setWalletConnected] = useState(false);
@@ -110,10 +110,20 @@ export function useFirmwarePipeline() {
 
     // Desktop runtime: real Python engine via IPC
     if (bridge && baseFile && targetFile) {
+      const basePath = bridge.getPathForFile(baseFile);
+      const targetPath = bridge.getPathForFile(targetFile);
+      if (!basePath || !targetPath) {
+        const missing = [!basePath ? baseFile.name : null, !targetPath ? targetFile.name : null]
+          .filter((name): name is string => name !== null)
+          .join(" + ");
+        addLog(`[Delta Engine] Could not resolve a filesystem path for ${missing} — re-select it via the file picker.`, "error");
+        setLoadingStep(null);
+        return;
+      }
       try {
         const result = await bridge.generatePatch(
-          bridge.getPathForFile(baseFile),
-          bridge.getPathForFile(targetFile),
+          basePath,
+          targetPath,
           deriveVersionTag(targetFile.name)
         );
         addLog(

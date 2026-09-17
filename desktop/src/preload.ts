@@ -10,8 +10,10 @@ const IPC_CHANNELS = {
 
 /** The only surface exposed to the renderer — narrow, explicit, no Node access. */
 const desktopApi = {
-  generatePatch: (request: GeneratePatchRequest): Promise<ReleaseResult> =>
-    ipcRenderer.invoke(IPC_CHANNELS.generatePatch, request),
+  generatePatch: (basePath: string, targetPath: string, versionTag: string): Promise<ReleaseResult> => {
+    const request: GeneratePatchRequest = { basePath, targetPath, versionTag };
+    return ipcRenderer.invoke(IPC_CHANNELS.generatePatch, request);
+  },
   pickBinary: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.pickBinary),
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
 };
