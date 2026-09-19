@@ -3,15 +3,22 @@ import type { LogEntry } from "../../components/organisms/SystemsLogTerminal";
 import type { LedgerRelease } from "../../components/organisms/LedgerDeploymentsTable";
 import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
 import { formatFileSize } from "../../lib/utils";
+import { useDesktopWallet } from "../wallet/useDesktopWallet";
+import {
+  formatVersionBytes32,
+  formatGoldenHashBytes32,
+  truncateAddress,
+} from "../../lib/web3Payloads";
 
 export type UpdateState = "idle" | "developer" | "blockchain" | "gateway" | "iot" | "success";
-
 export type BinaryKind = "base" | "target";
+
+const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function useFirmwarePipeline() {
   const [updateState, setUpdateState] = useState<UpdateState>("idle");
   const [firmwareVersion] = useState("v1.0");
-  
+
   // Pipeline Step Flags
   const [baseUploaded, setBaseUploaded] = useState(false);
   const [targetUploaded, setTargetUploaded] = useState(false);
@@ -19,7 +26,7 @@ export function useFirmwarePipeline() {
   const [urlConfigured, setUrlConfigured] = useState(false);
   const [walletConnected, setWalletConnected] = useState(false);
   const [approvalRequested, setApprovalRequested] = useState(false);
-  
+
   // Active Action Indicators
   const [loadingStep, setLoadingStep] = useState<string | null>(null);
 
@@ -34,57 +41,53 @@ export function useFirmwarePipeline() {
   const [deltaSizeKb, setDeltaSizeKb] = useState<number | null>(null);
   const [compressionRatio, setCompressionRatio] = useState<string | null>(null);
 
+  // Desktop Web3 Wallet & Smart Contract Integration
+  const wallet = useDesktopWallet();
+
   // Initial Logs
   const [logs, setLogs] = useState<LogEntry[]>([
     { id: 1, time: "09:14:21", message: "[SHA-256] Computing golden hash for delta patch (v1.1 firmware)...", type: "info" },
-    { id: 2, time: "09:14:22", message: "[SHA-256] 0x7f4a9c2b8e3d1a5f6c9e2b4d8a1c3e5f7a9b2c4d6e8f1a3c5e7f9b1c3d5e7f9a", type: "hash" },
+    { id: 2, time: "09:14:23", message: "[Multi-Sig] Contract 0x5FbDB...0aa3 initialized on Hardhat Localhost.", type: "success" },
+    { id: 3, time: "09:14:25", message: "[Wallet] Mobile MetaMask QR & Dev signers ready on Chain 31337.", type: "info" },
+    { id: 4, time: "09:14:27", message: "[Gateway] Ready to poll DeltaOTA smart contract state transitions.", type: "info" },
   ]);
 
-  // Initial On-Chain Releases (Solidity struct model)
+  // Initial Releases Ledger State
   const [releases, setReleases] = useState<LedgerRelease[]>([
-    {
-      version: "v1.0",
-      goldenHash: "0x7f4a9c2b8e3d1a5f6c9e2b4d8a1c3e5f7a9b2c4d6e8f1a3c5e7f9b1c3d5e7f9a",
-      approvalCount: 3,
-      maxApprovals: 3,
-      isLive: true,
-      isRevoked: false,
-    },
     {
       version: "v1.1",
       goldenHash: "0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f",
-      approvalCount: 2,
-      maxApprovals: 3,
+      approvalCount: 1,
+      maxApprovals: 2, // 2-of-3 multi-sig threshold
       isLive: false,
+      isRevoked: false,
+    },
+    {
+      version: "v1.0",
+      goldenHash: "0x3f7a1c9e8b2d4f6a0e1c3b5d7f9a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a",
+      approvalCount: 2,
+      maxApprovals: 2,
+      isLive: true,
       isRevoked: false,
     },
   ]);
 
   const addLog = useCallback((message: string, type: LogEntry["type"] = "info") => {
-    setLogs((prev) => [
-      ...prev,
-      {
-        id: Date.now() + Math.random(),
-        time: new Date().toLocaleTimeString([], { hour12: false }),
-        message,
-        type,
-      },
-    ]);
+    const time = new Date().toLocaleTimeString("en-US", { hour12: false });
+    setLogs((prev) => [{ id: Date.now() + Math.random(), time, message, type }, ...prev]);
   }, []);
 
-  const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-  // Pipeline Actions
   const handleLoadBinaries = async () => {
-    if (loadingStep || (baseUploaded && targetUploaded)) return;
     setLoadingStep("binaries");
-    addLog("[Firmware Mgr] Staging baseline binary v1.0 — 1.2 MB", "info");
-    await delay(800);
-    addLog("[Firmware Mgr] Staging target binary v1.1 — 1.25 MB", "info");
-    await delay(800);
-    addLog("[Firmware Mgr] Both firmware binaries staged successfully.", "success");
+    addLog("[Firmware Mgr] Reading base firmware (v1.0.bin, 1.2 MB)...", "info");
+    await delay(600);
     setBaseUploaded(true);
+    addLog("[Firmware Mgr] Base binary loaded and parsed successfully.", "success");
+    await delay(400);
+    addLog("[Firmware Mgr] Reading target firmware (v1.1.bin, 1.25 MB)...", "info");
+    await delay(600);
     setTargetUploaded(true);
+    addLog("[Firmware Mgr] Target binary loaded and parsed successfully.", "success");
     setLoadingStep(null);
   };
 
@@ -189,46 +192,142 @@ export function useFirmwarePipeline() {
   const handleConnectWallet = async () => {
     if (!urlConfigured || loadingStep) return;
     setLoadingStep("wallet");
-    addLog("[Web3] Connecting to Injected Provider (Sepolia)...", "info");
-    await delay(1000);
-    addLog("[Web3] Wallet 0x742d35Cc...0bEb9 Authenticated.", "success");
+    addLog("[Web3] Opening Desktop Wallet Connection & QR Code Modal...", "info");
+    wallet.openCustomQrModal();
     setWalletConnected(true);
     setLoadingStep(null);
   };
 
+  /**
+   * Step 5: Format and broadcast smart contract payload:
+   * proposeRelease(bytes32 version, bytes32 goldenHash, string ipfsUrl)
+   */
   const handleRequestApproval = async () => {
     if (!walletConnected || loadingStep) return;
     setLoadingStep("approval");
-    addLog("[Smart Contract] Broadcasting proposal to governance contract...", "info");
-    await delay(1000);
-    addLog("[Multi-Sig] Signature 1/3 anchored to ledger.", "success");
-    await delay(800);
-    addLog("[Multi-Sig] Signature 2/3 anchored to ledger.", "success");
-    addLog("[Governance] Status: Awaiting final threshold approval.", "warning");
-    setApprovalRequested(true);
-    setLoadingStep(null);
+
+    const targetVersion = targetFile ? deriveVersionTag(targetFile.name) : "v1.1";
+    const targetHash = goldenHash || "0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f";
+    const targetUrl = patchUrl || (ipfsCid ? `ipfs://${ipfsCid}` : "ipfs://QmXf7kp8s9tUvWxYz1234567890aAbBcCdDeEfFgGhHiIj");
+
+    addLog(
+      `[Payload Formatter] Formatting proposeRelease(version: "${targetVersion}", goldenHash: "${formatGoldenHashBytes32(targetHash).slice(0, 18)}...", ipfsUrl: "${targetUrl.slice(0, 30)}...")`,
+      "info"
+    );
+
+    try {
+      if (wallet.isConnected) {
+        addLog(`[Smart Contract] Broadcasting proposeRelease via signer ${truncateAddress(wallet.address || "")}...`, "info");
+        const receipt = await wallet.proposeRelease(targetVersion, targetHash, targetUrl);
+        addLog(`[Blockchain] Tx Mined: ${receipt.hash.slice(0, 20)}... in block #${receipt.blockNumber}`, "success");
+        addLog("[Multi-Sig] Signature 1/2 anchored on-chain! Awaiting second dev approval.", "success");
+      } else {
+        // Fallback simulation if no active live node
+        addLog("[Smart Contract] Signer prompt dispatched. Broadcasting to DeltaOTA...", "info");
+        await delay(900);
+        addLog("[Multi-Sig] Signature 1/2 anchored to ledger by Dev #1.", "success");
+        addLog("[Governance] Status: Awaiting threshold signature (2-of-3 required).", "warning");
+      }
+
+      setReleases((prev) => {
+        const exists = prev.some((r) => r.version === targetVersion);
+        if (exists) {
+          return prev.map((r) =>
+            r.version === targetVersion ? { ...r, goldenHash: targetHash, approvalCount: 1, isLive: false } : r
+          );
+        }
+        return [
+          {
+            version: targetVersion,
+            goldenHash: targetHash,
+            approvalCount: 1,
+            maxApprovals: 2,
+            isLive: false,
+            isRevoked: false,
+          },
+          ...prev,
+        ];
+      });
+
+      setApprovalRequested(true);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Contract call failed";
+      addLog(`[Smart Contract Error] ${msg}`, "error");
+      // Still allow step progression in local testing
+      setApprovalRequested(true);
+    } finally {
+      setLoadingStep(null);
+    }
   };
 
+  /**
+   * Action: "Kill" ledger button
+   * Formats and executes payload: revokeRelease(bytes32 version)
+   */
   const handleExecuteKillSwitch = async (version: string) => {
-    addLog(`[GOVERNANCE] KILL SWITCH ACTIVATED for ${version}...`, "warning");
-    await delay(800);
-    setReleases((prev) =>
-      prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
-    );
-    addLog(`[Smart Contract] Firmware ${version} revoked immutably on-chain.`, "error");
+    addLog(`[GOVERNANCE] KILL SWITCH TRIGGERED for ${version}...`, "warning");
+    addLog(`[Payload Formatter] Formatting revokeRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
+
+    try {
+      if (wallet.isConnected) {
+        addLog(`[Smart Contract] Calling revokeRelease("${version}") on ${wallet.contractAddress}...`, "info");
+        const receipt = await wallet.revokeRelease(version);
+        addLog(`[Blockchain] Release revoked in block #${receipt.blockNumber} (tx: ${receipt.hash.slice(0, 16)}...)`, "error");
+      } else {
+        await delay(800);
+        addLog(`[Smart Contract] Firmware ${version} revoked immutably on-chain.`, "error");
+      }
+
+      setReleases((prev) =>
+        prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
+      );
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Revoke failed";
+      addLog(`[Kill Switch Error] ${msg}`, "error");
+      setReleases((prev) =>
+        prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
+      );
+    }
   };
 
+  /**
+   * Action: "Approve" ledger button
+   * Formats and executes payload: approveRelease(bytes32 version)
+   */
   const handleApproveUpdate = async (version: string) => {
-    addLog(`[Governance] Signing threshold approval for ${version}...`, "info");
-    await delay(1000);
-    setReleases((prev) =>
-      prev.map((r) =>
-        r.version === version
-          ? { ...r, approvalCount: 3, isLive: true }
-          : r
-      )
-    );
-    addLog(`[Smart Contract] THRESHOLD REACHED (3/3): ${version} is now LIVE.`, "success");
+    addLog(`[Governance] Signing 2-of-3 threshold approval for ${version}...`, "info");
+    addLog(`[Payload Formatter] Formatting approveRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
+
+    try {
+      if (wallet.isConnected) {
+        addLog(`[Smart Contract] Calling approveRelease("${version}") from ${truncateAddress(wallet.address || "")}...`, "info");
+        const receipt = await wallet.approveRelease(version);
+        addLog(`[Blockchain] Threshold approval confirmed in block #${receipt.blockNumber}!`, "success");
+      } else {
+        await delay(900);
+      }
+
+      setReleases((prev) =>
+        prev.map((r) =>
+          r.version === version
+            ? { ...r, approvalCount: 2, isLive: true }
+            : r
+        )
+      );
+      addLog(`[Smart Contract] THRESHOLD REACHED (2/2): ${version} is now LIVE on-chain!`, "success");
+      addLog("[Edge Gateway] ReleasePromotedToLive event captured. Distribution unlocked.", "success");
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : "Approval failed";
+      addLog(`[Approve Error] ${msg}`, "error");
+      // Update state for manual test workflow
+      setReleases((prev) =>
+        prev.map((r) =>
+          r.version === version
+            ? { ...r, approvalCount: 2, isLive: true }
+            : r
+        )
+      );
+    }
   };
 
   const simulateUpdate = async () => {
@@ -272,6 +371,7 @@ export function useFirmwarePipeline() {
     ipfsCid,
     deltaSizeKb,
     compressionRatio,
+    wallet,
     handleLoadBinaries,
     handleLoadBinaryFile,
     handleGenerateDelta,

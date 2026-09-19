@@ -1,11 +1,13 @@
 import * as React from "react";
-import { ShieldCheck, Zap, Upload, Hash, Globe, Wallet, Users } from "lucide-react";
+import { ShieldCheck, Zap, Upload, Hash, Globe, Wallet, Users, QrCode } from "lucide-react";
 import { StatusPill } from "../atoms/StatusPill";
 import { WorkflowStepButton } from "../molecules/WorkflowStepButton";
 import { NodeConstraintsSidebar } from "../organisms/NodeConstraintsSidebar";
 import { LedgerDeploymentsTable } from "../organisms/LedgerDeploymentsTable";
 import { SystemLogsTerminal } from "../organisms/SystemsLogTerminal";
+import { WalletQrModal } from "../organisms/WalletQrModal";
 import { useFirmwarePipeline } from "../../features/firmware/useFirmwarePipeline";
+import { truncateAddress } from "../../lib/web3Payloads";
 
 export const DashboardScreen: React.FC = () => {
   const pipeline = useFirmwarePipeline();
@@ -36,9 +38,27 @@ export const DashboardScreen: React.FC = () => {
           <span className="text-sm text-slate-600 font-sans">Thesis Prototype</span>
         </div>
 
-        <div className="flex items-center gap-4 font-sans">
+        <div className="flex items-center gap-3 font-sans">
           <StatusPill color="emerald" label="Gateway Online" dot />
-          <StatusPill color="cyan" label="Chain: Sepolia" dot />
+          <StatusPill color="cyan" label="Chain: 31337 (Local)" dot />
+
+          {/* Connected Wallet Badge / QR Modal Trigger */}
+          <button
+            type="button"
+            onClick={() => pipeline.wallet.openCustomQrModal()}
+            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-cyan-800/60 bg-cyan-950/30 hover:bg-cyan-950/60 text-cyan-300 text-xs transition-colors"
+          >
+            <QrCode className="w-3.5 h-3.5 text-cyan-400" />
+            <span>
+              {pipeline.wallet.isConnected && pipeline.wallet.address
+                ? truncateAddress(pipeline.wallet.address)
+                : "Connect Wallet (QR)"}
+            </span>
+            {pipeline.wallet.isConnected && (
+              <span className="w-2 h-2 rounded-full bg-emerald-400" />
+            )}
+          </button>
+
           <button
             type="button"
             onClick={pipeline.simulateUpdate}
@@ -113,7 +133,7 @@ export const DashboardScreen: React.FC = () => {
               <WorkflowStepButton
                 stepNumber={4}
                 label="Connect Wallet"
-                subLabel="MetaMask / Web3"
+                subLabel="MetaMask / QR"
                 icon={<Wallet className="w-3.5 h-3.5" />}
                 isCompleted={pipeline.walletConnected}
                 isLoading={pipeline.loadingStep === "wallet"}
@@ -122,8 +142,8 @@ export const DashboardScreen: React.FC = () => {
               />
               <WorkflowStepButton
                 stepNumber={5}
-                label="Request Approval"
-                subLabel="2-of-3 Multi-Sig"
+                label="Sign & Propose"
+                subLabel="DeltaOTA Multi-Sig"
                 icon={<Users className="w-3.5 h-3.5" />}
                 isCompleted={pipeline.approvalRequested}
                 isLoading={pipeline.loadingStep === "approval"}
@@ -149,6 +169,17 @@ export const DashboardScreen: React.FC = () => {
           />
         </main>
       </div>
+
+      {/* WalletConnect Mobile QR Code & Hardhat Local Signer Modal */}
+      <WalletQrModal
+        isOpen={pipeline.wallet.isQrModalOpen}
+        onClose={pipeline.wallet.closeCustomQrModal}
+        connectionUri={pipeline.wallet.connectionUri}
+        onSelectDevAccount={pipeline.wallet.connectDevAccount}
+        onConnectInjected={pipeline.wallet.connectInjected}
+        contractAddress={pipeline.wallet.contractAddress}
+        onUpdateContractAddress={pipeline.wallet.updateContractAddress}
+      />
     </div>
   );
 };
