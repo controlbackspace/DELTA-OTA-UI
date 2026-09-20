@@ -141,7 +141,7 @@ export function useDesktopWallet() {
       if (modal) {
         await modal.open();
         // Subscribe to state
-        modal.subscribeState((state) => {
+        modal.subscribeState((state: { selectedNetworkId?: string | number }) => {
           if (state.selectedNetworkId) {
             setChainId(Number(state.selectedNetworkId));
           }

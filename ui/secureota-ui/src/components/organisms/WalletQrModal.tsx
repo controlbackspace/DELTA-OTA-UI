@@ -59,8 +59,8 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
         light: "#38bdf8", // Cyan-400 QR code
       },
     })
-      .then((url) => setQrDataUrl(url))
-      .catch((err) => console.error("QR Code Generation Error:", err));
+      .then((url: string) => setQrDataUrl(url))
+      .catch((err: unknown) => console.error("QR Code Generation Error:", err));
   }, [isOpen, effectiveUri]);
 
   if (!isOpen) return null;
