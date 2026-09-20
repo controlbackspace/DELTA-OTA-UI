@@ -5,7 +5,7 @@ import { IPC_CHANNELS } from "./contracts/ipc";
 import type { GeneratePatchRequest } from "./contracts/release";
 import { PythonLocator } from "./services/pythonLocator";
 import {
-  assertReadableBinary,
+  assertFirmwareBinary,
   resolveBundledRendererFile,
   resolveMakeReleaseScript,
 } from "./services/paths";
@@ -32,15 +32,15 @@ function buildPythonRunner(): PythonRunner {
 
 function registerIpcHandlers(runner: PythonRunner): void {
   ipcMain.handle(IPC_CHANNELS.generatePatch, async (_event, request: GeneratePatchRequest) => {
-    assertReadableBinary(request.basePath);
-    assertReadableBinary(request.targetPath);
+    assertFirmwareBinary(request.basePath);
+    assertFirmwareBinary(request.targetPath);
     return runner.runReleaseBuilder(request.basePath, request.targetPath, request.versionTag);
   });
 
   ipcMain.handle(IPC_CHANNELS.pickBinary, async () => {
     const result = await dialog.showOpenDialog({
       title: "Select firmware binary",
-      filters: [{ name: "Firmware binaries", extensions: ["bin"] }],
+      filters: [{ name: "IoT firmware (.bin/.elf/.hex)", extensions: ["bin", "elf", "hex"] }],
       properties: ["openFile"],
     });
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];

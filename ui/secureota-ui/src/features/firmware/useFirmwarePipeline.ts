@@ -2,6 +2,7 @@ import { useState, useCallback } from "react";
 import type { LogEntry } from "../../components/organisms/SystemsLogTerminal";
 import type { LedgerRelease } from "../../components/organisms/LedgerDeploymentsTable";
 import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
+import { isAcceptedFirmwareFile } from "../../lib/firmwareFiles";
 import { formatFileSize } from "../../lib/utils";
 import { useDesktopWallet } from "../wallet/useDesktopWallet";
 import {
@@ -38,6 +39,13 @@ export function useFirmwarePipeline() {
   // Real binary files (desktop runtime — Electron bridge)
   const [baseFile, setBaseFile] = useState<File | null>(null);
   const [targetFile, setTargetFile] = useState<File | null>(null);
+
+  // True step-2 readiness: desktop mode requires real File objects (the demo
+  // stager sets flags with no files); browser-sim mode trusts the staged flags.
+  const binariesReady =
+    getDesktopBridge() !== null
+      ? baseFile !== null && targetFile !== null
+      : baseUploaded && targetUploaded;
 
   // Build output (desktop runtime — Python release builder via IPC)
   const [goldenHash, setGoldenHash] = useState<string | null>(null);
@@ -97,6 +105,10 @@ export function useFirmwarePipeline() {
   };
 
   const handleLoadBinaryFile = async (file: File, kind: BinaryKind) => {
+    if (!isAcceptedFirmwareFile(file.name)) {
+      addLog(`[Firmware Mgr] Rejected ${file.name} — only .bin/.elf/.hex firmware files accepted.`, "error");
+      return;
+    }
     if (kind === "base") {
       setBaseFile(file);
       setBaseUploaded(true);
@@ -368,6 +380,7 @@ export function useFirmwarePipeline() {
     firmwareVersion,
     baseUploaded,
     targetUploaded,
+    binariesReady,
     deltaGenerated,
     urlConfigured,
     walletConnected,

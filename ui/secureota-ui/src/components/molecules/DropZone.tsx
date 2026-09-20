@@ -1,6 +1,11 @@
 import * as React from "react";
 import { CloudUpload, CheckCircle2, FileUp } from "lucide-react";
 import { cn } from "../../lib/utils";
+import {
+  FIRMWARE_ACCEPT_ATTR,
+  FIRMWARE_ACCEPT_LABEL,
+  isAcceptedFirmwareFile,
+} from "../../lib/firmwareFiles";
 
 export interface DropZoneProps {
   label: string;
@@ -18,7 +23,18 @@ export const DropZone: React.FC<DropZoneProps> = ({
   onUpload,
 }) => {
   const [isDragging, setIsDragging] = React.useState(false);
+  const [rejected, setRejected] = React.useState<string | null>(null);
   const fileInputRef = React.useRef<HTMLInputElement>(null);
+
+  const tryUpload = (file: File | undefined) => {
+    if (!file) return;
+    if (!isAcceptedFirmwareFile(file.name)) {
+      setRejected(file.name);
+      return;
+    }
+    setRejected(null);
+    onUpload(file);
+  };
 
   const handleDragOver = (e: React.DragEvent) => {
     e.preventDefault();
@@ -30,13 +46,11 @@ export const DropZone: React.FC<DropZoneProps> = ({
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
     setIsDragging(false);
-    const file = e.dataTransfer.files?.[0];
-    if (file) onUpload(file);
+    tryUpload(e.dataTransfer.files?.[0]);
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) onUpload(file);
+    tryUpload(e.target.files?.[0]);
     e.target.value = "";
   };
 
@@ -56,7 +70,7 @@ export const DropZone: React.FC<DropZoneProps> = ({
       <input
         ref={fileInputRef}
         type="file"
-        accept=".bin"
+        accept={FIRMWARE_ACCEPT_ATTR}
         className="hidden"
         onChange={handleFileChange}
       />
@@ -64,6 +78,12 @@ export const DropZone: React.FC<DropZoneProps> = ({
       <div className="text-[10px] text-slate-500 uppercase tracking-wider mb-3 font-sans font-medium">
         {label}
       </div>
+
+      {rejected && (
+        <div className="mb-3 px-3 py-2 rounded bg-rose-950/30 border border-rose-900/50 text-[10px] text-rose-300 font-sans">
+          Rejected {rejected} — only {FIRMWARE_ACCEPT_LABEL} firmware files accepted.
+        </div>
+      )}
 
       {isUploaded ? (
         <div className="flex items-center gap-3">
@@ -90,7 +110,7 @@ export const DropZone: React.FC<DropZoneProps> = ({
           <CloudUpload className={cn("w-8 h-8 transition-colors", isDragging ? "text-cyan-400" : "text-slate-600")} />
           <div className="text-center font-sans">
             <div className="text-xs text-slate-500">
-              Drag & drop <span className="text-slate-400 font-mono">.bin</span> file here
+              Drag & drop <span className="text-slate-400 font-mono">.bin / .elf / .hex</span> file here
             </div>
             <div className="text-[10px] text-slate-600 mt-1">or</div>
           </div>

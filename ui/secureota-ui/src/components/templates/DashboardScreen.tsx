@@ -108,6 +108,7 @@ export const DashboardScreen: React.FC = () => {
                 icon={<Upload className="w-3.5 h-3.5" />}
                 isCompleted={pipeline.baseUploaded && pipeline.targetUploaded}
                 isLoading={pipeline.loadingStep === "binaries"}
+                isDisabled={pipeline.loadingStep !== null && pipeline.loadingStep !== "binaries"}
                 onClick={pipeline.handleLoadBinaries}
               />
               <WorkflowStepButton
@@ -118,6 +119,7 @@ export const DashboardScreen: React.FC = () => {
                 isCompleted={pipeline.deltaGenerated}
                 isLoading={pipeline.loadingStep === "delta"}
                 isActive={pipeline.baseUploaded && pipeline.targetUploaded && !pipeline.deltaGenerated}
+                isDisabled={!pipeline.binariesReady}
                 onClick={pipeline.handleGenerateDelta}
               />
               <WorkflowStepButton
@@ -128,6 +130,7 @@ export const DashboardScreen: React.FC = () => {
                 isCompleted={pipeline.urlConfigured}
                 isLoading={pipeline.loadingStep === "url"}
                 isActive={pipeline.deltaGenerated && !pipeline.urlConfigured}
+                isDisabled={!pipeline.deltaGenerated}
                 onClick={pipeline.handleConfigureUrl}
               />
               <WorkflowStepButton
@@ -138,6 +141,7 @@ export const DashboardScreen: React.FC = () => {
                 isCompleted={pipeline.walletConnected}
                 isLoading={pipeline.loadingStep === "wallet"}
                 isActive={pipeline.urlConfigured && !pipeline.walletConnected}
+                isDisabled={!pipeline.urlConfigured}
                 onClick={pipeline.handleConnectWallet}
               />
               <WorkflowStepButton
@@ -148,6 +152,7 @@ export const DashboardScreen: React.FC = () => {
                 isCompleted={pipeline.approvalRequested}
                 isLoading={pipeline.loadingStep === "approval"}
                 isActive={pipeline.walletConnected && !pipeline.approvalRequested}
+                isDisabled={!pipeline.walletConnected}
                 isLast={true}
                 onClick={pipeline.handleRequestApproval}
               />

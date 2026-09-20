@@ -22,3 +22,15 @@ export function assertReadableBinary(filePath: string): void {
     throw new Error(`Not a regular file: ${filePath}`);
   }
 }
+
+// NOTE: the accepted list mirrors ui/secureota-ui/src/lib/firmwareFiles.ts
+// (separate runtimes cannot share the module). Keep both lists in sync.
+const FIRMWARE_EXTENSIONS = [".bin", ".elf", ".hex"];
+
+/** assertReadableBinary plus firmware-type enforcement for patch inputs. */
+export function assertFirmwareBinary(filePath: string): void {
+  assertReadableBinary(filePath);
+  if (!FIRMWARE_EXTENSIONS.some((ext) => filePath.toLowerCase().endsWith(ext))) {
+    throw new Error(`Unsupported firmware type: ${filePath} (expected .bin/.elf/.hex)`);
+  }
+}
