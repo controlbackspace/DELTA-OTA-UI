@@ -36,6 +36,9 @@ export function useFirmwarePipeline() {
   // Active Action Indicators
   const [loadingStep, setLoadingStep] = useState<string | null>(null);
 
+  // Upload-section highlight pulse (step 1 redirects there; real intake only).
+  const [uploadHighlight, setUploadHighlight] = useState(false);
+
   // Real binary files (desktop runtime — Electron bridge)
   const [baseFile, setBaseFile] = useState<File | null>(null);
   const [targetFile, setTargetFile] = useState<File | null>(null);
@@ -98,17 +101,14 @@ export function useFirmwarePipeline() {
   }, []);
 
   const handleLoadBinaries = async () => {
-    setLoadingStep("binaries");
-    addLog("[Firmware Mgr] Reading base firmware (v1.0.bin, 1.2 MB)...", "info");
-    await delay(600);
-    setBaseUploaded(true);
-    addLog("[Firmware Mgr] Base binary loaded and parsed successfully.", "success");
-    await delay(400);
-    addLog("[Firmware Mgr] Reading target firmware (v1.1.bin, 1.25 MB)...", "info");
-    await delay(600);
-    setTargetUploaded(true);
-    addLog("[Firmware Mgr] Target binary loaded and parsed successfully.", "success");
-    setLoadingStep(null);
+    // No fake staging: real binaries enter only via the sidebar dropzones.
+    // Step 1 guides the operator there instead (button UI unchanged).
+    document
+      .getElementById("firmware-upload-pipeline")
+      ?.scrollIntoView({ behavior: "smooth", block: "center" });
+    setUploadHighlight(true);
+    window.setTimeout(() => setUploadHighlight(false), 1600);
+    addLog("[Firmware Mgr] Stage base + target binaries via the sidebar dropzones.", "info");
   };
 
   const handleLoadBinaryFile = async (file: File, kind: BinaryKind) => {
@@ -387,6 +387,7 @@ export function useFirmwarePipeline() {
     baseUploaded,
     targetUploaded,
     binariesReady,
+    uploadHighlight,
     deltaGenerated,
     urlConfigured,
     walletConnected,

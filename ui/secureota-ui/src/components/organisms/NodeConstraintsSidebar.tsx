@@ -3,7 +3,7 @@ import { Cpu, CloudUpload, Hash, AlertTriangle, CheckCircle2 } from "lucide-reac
 import { CodeBadge } from "../atoms/CodeBadge";
 import { DropZone } from "../molecules/DropZone";
 import { ResourceMetricMeter } from "../molecules/ResourceMatrix";
-import { formatFileSize } from "../../lib/utils";
+import { cn, formatFileSize } from "../../lib/utils";
 
 export interface NodeConstraintsSidebarProps {
   firmwareVersion: string;
@@ -21,6 +21,7 @@ export interface NodeConstraintsSidebarProps {
   targetFile: File | null;
   onUploadBase: (file: File) => void;
   onUploadTarget: (file: File) => void;
+  highlightUpload: boolean;
 }
 
 export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
@@ -39,6 +40,7 @@ export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
   targetFile,
   onUploadBase,
   onUploadTarget,
+  highlightUpload,
 }) => {
   const binariesLoaded = baseUploaded && targetUploaded;
   const ramUsedKb = ramTotalKb - ramFreeKb;
@@ -106,7 +108,13 @@ export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
         </div>
       </section>
 
-      <section className="p-5 border-b border-[#1a2a3a]">
+      <section
+        id="firmware-upload-pipeline"
+        className={cn(
+          "p-5 border-b border-[#1a2a3a] transition-shadow duration-300",
+          highlightUpload && "shadow-[0_0_0_2px_rgba(34,211,238,0.7)]"
+        )}
+      >
         <div className="flex items-center gap-2.5">
           <CloudUpload className="w-4 h-4 text-violet-400" />
           <span className="text-xs uppercase tracking-wider text-violet-400 font-sans font-semibold">
@@ -117,15 +125,15 @@ export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
         <div className="mt-4 space-y-3">
           <DropZone
             label="Upload Base Binary (v1.0)"
-            filename={baseFile?.name ?? "base_v1.0.bin"}
-            filesize={baseFile ? formatFileSize(baseFile.size) : "1.2 MB"}
+            filename={baseFile?.name ?? "No file staged"}
+            filesize={baseFile ? formatFileSize(baseFile.size) : "—"}
             isUploaded={baseUploaded}
             onUpload={onUploadBase}
           />
           <DropZone
             label="Upload Target Binary (v1.1)"
-            filename={targetFile?.name ?? "update_v1.1.bin"}
-            filesize={targetFile ? formatFileSize(targetFile.size) : "1.25 MB"}
+            filename={targetFile?.name ?? "No file staged"}
+            filesize={targetFile ? formatFileSize(targetFile.size) : "—"}
             isUploaded={targetUploaded}
             onUpload={onUploadTarget}
           />

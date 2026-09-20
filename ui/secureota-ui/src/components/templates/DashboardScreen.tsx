@@ -94,6 +94,7 @@ export const DashboardScreen: React.FC = () => {
           targetFile={pipeline.targetFile}
           onUploadBase={(file) => pipeline.handleLoadBinaryFile(file, "base")}
           onUploadTarget={(file) => pipeline.handleLoadBinaryFile(file, "target")}
+          highlightUpload={pipeline.uploadHighlight}
         />
 
         {/* Center Main Stage */}
