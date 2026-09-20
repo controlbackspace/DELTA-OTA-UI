@@ -66,7 +66,7 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
                   <span
                     className={cn(
                       "font-semibold",
-                      release.approvalCount >= release.maxApprovals
+                      release.isLive || release.approvalCount >= release.maxApprovals
                         ? "text-emerald-400"
                         : "text-amber-400"
                     )}

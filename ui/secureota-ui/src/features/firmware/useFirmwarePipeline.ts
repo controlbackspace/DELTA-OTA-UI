@@ -15,6 +15,11 @@ export type BinaryKind = "base" | "target";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
+// Demo escape hatch: when true, failed/offline contract calls still advance the
+// pipeline so the UI flow can be demonstrated without a live node.
+// Set to false to enforce honest failures (errors block step progression).
+const ALLOW_OFFLINE_PROGRESSION = true;
+
 export function useFirmwarePipeline() {
   const [updateState, setUpdateState] = useState<UpdateState>("idle");
   const [firmwareVersion] = useState("v1.0");
@@ -58,7 +63,7 @@ export function useFirmwarePipeline() {
       version: "v1.1",
       goldenHash: "0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f",
       approvalCount: 1,
-      maxApprovals: 2, // 2-of-3 multi-sig threshold
+      maxApprovals: 3, // 2-of-3 multi-sig threshold
       isLive: false,
       isRevoked: false,
     },
@@ -66,7 +71,7 @@ export function useFirmwarePipeline() {
       version: "v1.0",
       goldenHash: "0x3f7a1c9e8b2d4f6a0e1c3b5d7f9a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a",
       approvalCount: 2,
-      maxApprovals: 2,
+      maxApprovals: 3,
       isLive: true,
       isRevoked: false,
     },
@@ -220,12 +225,12 @@ export function useFirmwarePipeline() {
         addLog(`[Smart Contract] Broadcasting proposeRelease via signer ${truncateAddress(wallet.address || "")}...`, "info");
         const receipt = await wallet.proposeRelease(targetVersion, targetHash, targetUrl);
         addLog(`[Blockchain] Tx Mined: ${receipt.hash.slice(0, 20)}... in block #${receipt.blockNumber}`, "success");
-        addLog("[Multi-Sig] Signature 1/2 anchored on-chain! Awaiting second dev approval.", "success");
+        addLog("[Multi-Sig] Signature 1 of 2 (2-of-3 multisig) anchored on-chain! Awaiting second dev approval.", "success");
       } else {
         // Fallback simulation if no active live node
         addLog("[Smart Contract] Signer prompt dispatched. Broadcasting to DeltaOTA...", "info");
         await delay(900);
-        addLog("[Multi-Sig] Signature 1/2 anchored to ledger by Dev #1.", "success");
+        addLog("[Multi-Sig] Signature 1 of 2 (2-of-3 multisig) anchored to ledger by Dev #1.", "success");
         addLog("[Governance] Status: Awaiting threshold signature (2-of-3 required).", "warning");
       }
 
@@ -241,7 +246,7 @@ export function useFirmwarePipeline() {
             version: targetVersion,
             goldenHash: targetHash,
             approvalCount: 1,
-            maxApprovals: 2,
+            maxApprovals: 3,
             isLive: false,
             isRevoked: false,
           },
@@ -253,8 +258,10 @@ export function useFirmwarePipeline() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Contract call failed";
       addLog(`[Smart Contract Error] ${msg}`, "error");
-      // Still allow step progression in local testing
-      setApprovalRequested(true);
+      if (ALLOW_OFFLINE_PROGRESSION) {
+        // Still allow step progression in local testing
+        setApprovalRequested(true);
+      }
     } finally {
       setLoadingStep(null);
     }
@@ -284,9 +291,11 @@ export function useFirmwarePipeline() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Revoke failed";
       addLog(`[Kill Switch Error] ${msg}`, "error");
-      setReleases((prev) =>
-        prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
-      );
+      if (ALLOW_OFFLINE_PROGRESSION) {
+        setReleases((prev) =>
+          prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
+        );
+      }
     }
   };
 
@@ -314,19 +323,21 @@ export function useFirmwarePipeline() {
             : r
         )
       );
-      addLog(`[Smart Contract] THRESHOLD REACHED (2/2): ${version} is now LIVE on-chain!`, "success");
+      addLog(`[Smart Contract] THRESHOLD REACHED (2/3): ${version} is now LIVE on-chain!`, "success");
       addLog("[Edge Gateway] ReleasePromotedToLive event captured. Distribution unlocked.", "success");
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Approval failed";
       addLog(`[Approve Error] ${msg}`, "error");
-      // Update state for manual test workflow
-      setReleases((prev) =>
-        prev.map((r) =>
-          r.version === version
-            ? { ...r, approvalCount: 2, isLive: true }
-            : r
-        )
-      );
+      if (ALLOW_OFFLINE_PROGRESSION) {
+        // Update state for manual test workflow
+        setReleases((prev) =>
+          prev.map((r) =>
+            r.version === version
+              ? { ...r, approvalCount: 2, isLive: true }
+              : r
+          )
+        );
+      }
     }
   };
 

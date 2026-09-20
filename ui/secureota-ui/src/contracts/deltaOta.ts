@@ -17,9 +17,11 @@ export const DELTA_OTA_ABI = [
   "event ReleaseRevoked(bytes32 version, address indexed revoker)"
 ] as const;
 
-// Default contract address when deployed via blockchain/scripts/deploy.js
+// Default contract address — aligned with the gateway poller's DELTA_CONTRACT_ADDRESS
+// fallback (gateway/secureota/gateway_runtime/blockchain_poller.py). Replace both with
+// the real address printed by blockchain/scripts/deploy.js on first real deploy.
 // Dev can override this in localStorage or via the UI settings modal
-export const DEFAULT_CONTRACT_ADDRESS = "0x5FbDB2315678afecb367f032d93F642f64180aa3";
+export const DEFAULT_CONTRACT_ADDRESS = "0x445bd590A01fe6709d4f13A8F579c1e4846921db";
 
 // Standard Hardhat Localhost Network Config
 export const HARDHAT_LOCAL_CHAIN = {
