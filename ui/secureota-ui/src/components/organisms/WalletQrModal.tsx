@@ -13,11 +13,14 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { HARDHAT_AUTHORIZED_DEVS } from "../../contracts/deltaOta";
+import { StatusPill } from "../atoms/StatusPill";
+import { DevSignerCard } from "../molecules/DevSignerCard";
 
 export interface WalletQrModalProps {
   isOpen: boolean;
   onClose: () => void;
   connectionUri?: string | null;
+  connectedAddress?: string | null;
   onSelectDevAccount: (devIndex: number) => void;
   onConnectInjected: () => Promise<unknown>;
   contractAddress: string;
@@ -28,6 +31,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   isOpen,
   onClose,
   connectionUri,
+  connectedAddress,
   onSelectDevAccount,
   onConnectInjected,
   contractAddress,
@@ -92,9 +96,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             <div>
               <h2 className="text-sm font-semibold text-white font-sans flex items-center gap-2">
                 Desktop Wallet Connection
-                <span className="text-[10px] px-2 py-0.5 rounded bg-cyan-950 text-cyan-400 border border-cyan-800/50">
-                  Chain ID: 31337
-                </span>
+                <StatusPill color="cyan" label="Chain ID: 31337" dot />
               </h2>
               <p className="text-xs text-slate-400 font-sans">
                 MetaMask Mobile QR Code & Hardhat Localhost
@@ -176,9 +178,8 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                     Generating QR code...
                   </div>
                 )}
-                <div className="absolute top-2 right-2 flex items-center gap-1.5 px-2 py-0.5 rounded bg-cyan-950/80 text-[10px] text-cyan-400 border border-cyan-700/40">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-                  Live WC 2.0
+                <div className="absolute top-2 right-2">
+                  <StatusPill color="emerald" label="Live WC 2.0" dot />
                 </div>
               </div>
 
@@ -227,44 +228,23 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
               <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 text-slate-300 font-sans space-y-1">
                 <p className="font-semibold text-white">2-of-3 Multi-Sig Authorized Developer Signers</p>
                 <p className="text-slate-400 text-[11px]">
-                  Pre-seeded in DeltaOTA constructor on Hardhat local node (<code className="text-cyan-400">127.0.0.1:8545</code>). Click to instantly connect and sign as that developer:
+                  Pre-seeded in DeltaOTA constructor on Hardhat local node (<code className="text-cyan-400">127.0.0.1:8545</code>). Click to connect and sign as that developer:
                 </p>
               </div>
 
               <div className="space-y-2">
                 {HARDHAT_AUTHORIZED_DEVS.map((addr, idx) => (
-                  <div
+                  <DevSignerCard
                     key={addr}
-                    className="flex items-center justify-between p-3 rounded-lg border border-[#1a2a3a] bg-[#05080f] hover:border-cyan-500/40 transition-colors"
-                  >
-                    <div className="space-y-0.5">
-                      <div className="flex items-center gap-2">
-                        <span className="text-cyan-400 font-bold">Dev #{idx + 1}</span>
-                        {idx === 0 && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] bg-indigo-950 text-indigo-300 border border-indigo-800">
-                            Proposer (Deployer)
-                          </span>
-                        )}
-                        {idx > 0 && (
-                          <span className="px-1.5 py-0.2 rounded text-[9px] bg-emerald-950 text-emerald-300 border border-emerald-800">
-                            Threshold Approver
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-slate-400 font-mono text-[11px]">{addr}</div>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onSelectDevAccount(idx);
-                        onClose();
-                      }}
-                      className="px-3 py-1.5 rounded border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/60 text-cyan-300 font-sans font-medium text-xs transition-all"
-                    >
-                      Connect Dev #{idx + 1}
-                    </button>
-                  </div>
+                    devIndex={idx}
+                    address={addr}
+                    isProposer={idx === 0}
+                    isConnected={connectedAddress?.toLowerCase() === addr.toLowerCase()}
+                    onSelect={() => {
+                      onSelectDevAccount(idx);
+                      onClose();
+                    }}
+                  />
                 ))}
               </div>
             </div>

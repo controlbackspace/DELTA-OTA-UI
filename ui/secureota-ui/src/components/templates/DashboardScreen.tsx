@@ -175,6 +175,7 @@ export const DashboardScreen: React.FC = () => {
         isOpen={pipeline.wallet.isQrModalOpen}
         onClose={pipeline.wallet.closeCustomQrModal}
         connectionUri={pipeline.wallet.connectionUri}
+        connectedAddress={pipeline.wallet.address}
         onSelectDevAccount={pipeline.wallet.connectDevAccount}
         onConnectInjected={pipeline.wallet.connectInjected}
         contractAddress={pipeline.wallet.contractAddress}
