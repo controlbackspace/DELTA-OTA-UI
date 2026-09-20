@@ -15,6 +15,9 @@ export class PythonExecutionError extends Error {
 const MOCK_IPFS_ORIGIN = "http://local-test-server";
 const STALE_HTTP_ORIGIN = "http://localhost:8000";
 
+/** Hard cap on a single release-builder run (spawn hangs are otherwise silent). */
+const RELEASE_BUILDER_TIMEOUT_MS = 120_000;
+
 /** Owns the child-process lifecycle and stdout parsing for the Python release builder. */
 export class PythonRunner {
   constructor(
@@ -53,6 +56,28 @@ export class PythonRunner {
 
       let stdout = "";
       let stderr = "";
+      let settled = false;
+
+      const finish = (fn: () => void) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        fn();
+      };
+
+      const timer = setTimeout(() => {
+        finish(() => {
+          child.kill();
+          reject(
+            new PythonExecutionError(
+              "Release builder timed out after 120s (is the gateway venv intact?)",
+              null,
+              stderr,
+            ),
+          );
+        });
+      }, RELEASE_BUILDER_TIMEOUT_MS);
+      timer.unref();
 
       child.stdout.on("data", (chunk: Buffer) => {
         stdout += chunk.toString("utf8");
@@ -61,12 +86,16 @@ export class PythonRunner {
         stderr += chunk.toString("utf8");
       });
       child.on("error", (err) => {
-        reject(
-          new PythonExecutionError(`Failed to launch python: ${err.message}`, null, stderr),
-        );
+        finish(() => {
+          reject(
+            new PythonExecutionError(`Failed to launch python: ${err.message}`, null, stderr),
+          );
+        });
       });
       child.on("close", (code) => {
-        resolve({ stdout, stderr, exitCode: code });
+        finish(() => {
+          resolve({ stdout, stderr, exitCode: code });
+        });
       });
     });
   }

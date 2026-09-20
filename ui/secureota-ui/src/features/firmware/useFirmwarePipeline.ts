@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import type { LogEntry } from "../../components/organisms/SystemsLogTerminal";
 import type { LedgerRelease } from "../../components/organisms/LedgerDeploymentsTable";
 import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
@@ -56,6 +56,13 @@ export function useFirmwarePipeline() {
 
   // Desktop Web3 Wallet & Smart Contract Integration
   const wallet = useDesktopWallet();
+
+  // Step 4 completes only on a real connection (dev signer, injected, or QR).
+  // Closing the modal unconnected — or disconnecting later — leaves the step
+  // honestly incomplete instead of certifying a wallet that was never linked.
+  useEffect(() => {
+    setWalletConnected(wallet.isConnected);
+  }, [wallet.isConnected]);
 
   // Initial Logs
   const [logs, setLogs] = useState<LogEntry[]>([
@@ -211,7 +218,6 @@ export function useFirmwarePipeline() {
     setLoadingStep("wallet");
     addLog("[Web3] Opening Desktop Wallet Connection & QR Code Modal...", "info");
     wallet.openCustomQrModal();
-    setWalletConnected(true);
     setLoadingStep(null);
   };
 

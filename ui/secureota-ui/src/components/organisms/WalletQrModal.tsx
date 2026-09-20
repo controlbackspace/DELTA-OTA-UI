@@ -25,6 +25,7 @@ export interface WalletQrModalProps {
   onConnectInjected: () => Promise<unknown>;
   contractAddress: string;
   onUpdateContractAddress: (addr: string) => void;
+  statusMessage?: string | null;
 }
 
 export const WalletQrModal: React.FC<WalletQrModalProps> = ({
@@ -36,6 +37,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   onConnectInjected,
   contractAddress,
   onUpdateContractAddress,
+  statusMessage,
 }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [copied, setCopied] = useState<boolean>(false);
@@ -259,7 +261,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                   value={contractAddress}
                   onChange={(e) => onUpdateContractAddress(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-[#1a2a3a] bg-[#05080f] font-mono text-cyan-300 text-xs focus:outline-none focus:border-cyan-500"
-                  placeholder="0x5FbDB2315678afecb367f032d93F642f64180aa3"
+                  placeholder="0x445bd590A01fe6709d4f13A8F579c1e4846921db"
                 />
                 <p className="text-[11px] text-slate-500">
                   Update this if you redeployed DeltaOTA to a new address using <code className="text-slate-400">npx hardhat run scripts/deploy.js</code>.
@@ -280,8 +282,8 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
         </div>
 
         {/* Modal Footer */}
-        <div className="px-6 py-3 border-t border-[#1a2a3a] bg-[#05080f] flex items-center justify-between text-xs text-slate-500 font-sans">
-          <span>DeltaOTA Multi-Sig 2-of-3</span>
+        <div className="px-6 py-3 border-t border-[#1a2a3a] bg-[#05080f] flex items-center justify-between gap-4 text-xs text-slate-500 font-sans">
+          <span className="truncate">{statusMessage ?? "DeltaOTA Multi-Sig 2-of-3"}</span>
           <button
             type="button"
             onClick={onClose}

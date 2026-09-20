@@ -185,6 +185,7 @@ export const DashboardScreen: React.FC = () => {
         onConnectInjected={pipeline.wallet.connectInjected}
         contractAddress={pipeline.wallet.contractAddress}
         onUpdateContractAddress={pipeline.wallet.updateContractAddress}
+        statusMessage={pipeline.wallet.statusMessage}
       />
     </div>
   );
