@@ -15,6 +15,7 @@ release/
 
 # Runtime & build artifacts
 artifacts/
+blockchain/cache/
 setup.log
 
 # IDE & OS
