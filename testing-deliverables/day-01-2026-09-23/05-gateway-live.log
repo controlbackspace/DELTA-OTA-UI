@@ -1,0 +1,21 @@
+Success!
+[CoAP] Server active. Listening on 192.168.100.94:5683...
+[Boot] Gateway loaded. Current version: v1.0
+
+[Network] Polling ledger for firmware version: v1.1...
+[Ledger] Successfully retrieved state for v1.1: Live=True, Revoked=False
+Success! New Update (v1.1) is Live.
+[Security] Expected Hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+[Security] Computed Hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+[Security] Verification Passed. Payload is authentic.
+Verified! Moving to encryption!
+[Encryption] Wrapping payload in OSCORE AES-CCM layer...
+[Encryption] Payload secured and saved to C:\Users\jajai\Desktop\DELTA-OTA-UI\gateway\artifacts\encrypted_patch.bin.
+[Encryption] Slicing payload into block frames...
+[Encryption] Wrote 1 block frame(s) to C:\Users\jajai\Desktop\DELTA-OTA-UI\gateway\artifacts\blocks.
+[System] Gateway state updated to v1.1
+
+[Network] Polling ledger for firmware version: v1.1...
+[Ledger] Successfully retrieved state for v1.1: Live=True, Revoked=False
+[Gateway] No new updates found. Sleeping...
+[CoAP] Firmware requested by device.
