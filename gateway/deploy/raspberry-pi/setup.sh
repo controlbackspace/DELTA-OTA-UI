@@ -79,7 +79,12 @@ if [[ -z "$ADDR" ]]; then
     exit 1
 fi
 umask 077
+PREV_BIND="$(sed -n 's/^DELTA_BIND_ADDR=//p' "$ENV_FILE" 2>/dev/null | tail -n 1)"
 printf 'DELTA_RPC_URL=%s\nDELTA_CONTRACT_ADDRESS=%s\n' "$RPC_URL" "$ADDR" > "$ENV_FILE"
+if [[ -n "$PREV_BIND" ]]; then
+    printf 'DELTA_BIND_ADDR=%s\n' "$PREV_BIND" >> "$ENV_FILE"
+    echo "    Preserved DELTA_BIND_ADDR=$PREV_BIND from setup-network.sh"
+fi
 echo "    Contract address: $ADDR -> $ENV_FILE"
 
 echo "==> [7/7] Starting the gateway..."

@@ -13,6 +13,13 @@ STATE_FILE = ARTIFACT_DIR / "gateway_state.json"
 TARGET_VERSION = "v1.1"
 POLL_INTERVAL = 5
 PRE_SHARED_KEY = b"TEST_KEY_1234567"
+BLOCKS_DIR = ARTIFACT_DIR / "blocks"  # per-chunk frames for the ESP32 /patch protocol
+
+
+def _clear_block_frames():
+    """Kill-switch parity: never serve stale chunks after revoke/mismatch."""
+    for stale in BLOCKS_DIR.glob("block_*.bin"):
+        stale.unlink(missing_ok=True)
 
 ## Main Loop
 
@@ -51,6 +58,7 @@ async def main_loop():
         # Zero Trust: never apply or serve a release that was revoked on-chain
         if release_data["isRevoked"] is True:
             ENCRYPTED_PATCH.unlink(missing_ok=True)
+            _clear_block_frames()
             print(f"[Gateway] FATAL: Release {TARGET_VERSION} has been revoked on-chain. Halting gateway.")
             return
 
@@ -68,6 +76,8 @@ async def main_loop():
                     PRE_SHARED_KEY
                 )
                 
+                engine.encrypt_blocks(DUMMY_PATCH, BLOCKS_DIR, PRE_SHARED_KEY)
+
                 installed_version = release_data["version"]
                 
                 with open(state_file, "w") as file:
@@ -77,6 +87,7 @@ async def main_loop():
             else:
                 print("Hash Mismatch!")
                 ENCRYPTED_PATCH.unlink(missing_ok=True)
+                _clear_block_frames()
                 await asyncio.sleep(POLL_INTERVAL)
         else:
             

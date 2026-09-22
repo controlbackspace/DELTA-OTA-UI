@@ -1,5 +1,6 @@
 import hashlib
 import os
+from pathlib import Path
 from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
 class SecurityEngine:
@@ -20,6 +21,36 @@ class SecurityEngine:
 
         print(f"[Encryption] Payload secured and saved to {output_path}.")
         return True
+
+    def encrypt_blocks(self, input_path, output_dir, key, chunk_size: int = 1024) -> int:
+        """Slice plaintext into chunk_size pieces; encrypt each as an
+        independent nonce||cipher||tag frame: block_<N>.bin in output_dir.
+
+        Serves the ESP32 chunk protocol (main.cpp requestChunk): every block
+        independently auth-decodes on the device. Nonce = b"BLK" + 8-byte
+        big-endian block index + 2 zero bytes (13 bytes, unique per block
+        under one key). Returns the block count.
+        """
+        print("[Encryption] Slicing payload into block frames...")
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        for old in output_dir.glob("block_*.bin"):
+            old.unlink()
+
+        with open(input_path, "rb") as file:
+            raw_bytes = file.read()
+
+        cipher = AESCCM(key)
+        count = 0
+        for offset in range(0, len(raw_bytes), chunk_size):
+            index = offset // chunk_size
+            nonce = b"BLK" + index.to_bytes(8, "big") + b"\x00\x00"
+            frame = nonce + cipher.encrypt(nonce, raw_bytes[offset:offset + chunk_size], None)
+            (output_dir / f"block_{index}.bin").write_bytes(frame)
+            count += 1
+
+        print(f"[Encryption] Wrote {count} block frame(s) to {output_dir}.")
+        return count
 
     def verify_firmware_integrity(self, ledger_data: dict, file_path: str) -> bool:
         # 1. State Check
