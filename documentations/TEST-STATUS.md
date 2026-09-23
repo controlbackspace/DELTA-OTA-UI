@@ -7,7 +7,7 @@ in hand) · **HW** = proven over the air on Pi + ESP32 (needs arrival day).
 | Date | Deliverable | Evidence today | Needs HW day |
 |---|---|---|---|
 | Sept 23 | D1 Baseline (happy path) | SIM: `run_simulation.py` phase 4 (`[OK] b'test'`); `block_client.py` pass 1 (2.04-final, reassembly exact) | Flash+reboot on ESP32; 1 KB window flush to backup slot on-device |
-| Sept 24 | D2 Kill switch | SIM: phase 1 (`[BLOCKED]` 4.01), phase 2 (`[TIMEOUT]` halt) | 4.01 handling on-device (`main.cpp` ignores unknown codes — CODE) |
+| Sept 24 (ran Sept 23) | D2 Kill switch | SIM phases 1–2 green + LIVE: revoke→HALT (exit 0, no artifact, device [TIMEOUT]); mismatch→destroyed (device [BLOCKED] 4.01). Evidence: `testing-deliverables/day-02-2026-09-23/` (04/05 revoke, 08/09 mismatch transcripts) | 4.01 handling on-device (`main.cpp` ignores unknown codes — CODE) |
 | Sept 25 | D3 Tag corruption + rollback | SIM: phase 3 (`[FAIL]` tag mismatch); harness: per-block auth | `AUTH_FAIL_THRESHOLD=3` → abort → boot old image (CODE, `main.cpp:250-268`) |
 | Sept 26 | D4 bsdiff stress | SIM + harness pass 2 (3-block 3000 B image, exact reassembly); gateway bsdiff real | Multi-chunk flash streaming on-device; stack-overflow watch (BSS design — CODE) |
 | Sept 27 | D5 Interruption / power loss | CODE: `_abortOta`, `_rollbackToBackup`, anti-brick self-test (`main.cpp:67-144`) | Real power-cut + A/B isolation proof |

@@ -1,0 +1,7 @@
+Success!
+[CoAP] Server active. Listening on 192.168.100.94:5683...
+[Boot] Gateway loaded. Current version: v1.0
+
+[Network] Polling ledger for firmware version: v1.1...
+[Ledger] Successfully retrieved state for v1.1: Live=False, Revoked=True
+[Gateway] FATAL: Release v1.1 has been revoked on-chain. Halting gateway.

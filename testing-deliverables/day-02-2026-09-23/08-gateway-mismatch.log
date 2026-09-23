@@ -1,0 +1,13 @@
+Success!
+[CoAP] Server active. Listening on 192.168.100.94:5683...
+[Boot] Gateway loaded. Current version: v1.0
+
+[Network] Polling ledger for firmware version: v1.1...
+[Ledger] Successfully retrieved state for v1.1: Live=True, Revoked=False
+Success! New Update (v1.1) is Live.
+[Security] Expected Hash: 8a10f1953f50ef898a36d0283f1fc2b0fba83e3b0ca219541c520e5ede061353
+[Security] Computed Hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+[Security] FATAL: Hash mismatch. Payload destroyed.
+Hash Mismatch!
+[CoAP] Firmware requested by device.
+[CoAP] Blocked: no verified firmware on disk. Device is not authorized (4.01).

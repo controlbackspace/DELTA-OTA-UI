@@ -15,7 +15,8 @@ line-for-line; the standalone equivalent (`python main_gateway.py`) runs the
 same logic. This harness drives it in-process so it can own the CoAP server
 lifecycle (necessary to make the "gateway halts" phase actually halt).
 
-Run:  python simulation/run_simulation.py
+Run:  python simulation/run_simulation.py [phases]
+      phases: optional comma-separated subset, e.g. "1,2" (default: all four).
 """
 import sys
 from pathlib import Path
@@ -237,15 +238,29 @@ async def phase4_success():
 # ── Entry ───────────────────────────────────────────────────────────────────
 
 async def main():
-    print("Delta-OTA simulation - 4 phases, in-process E2E.")
-    await phase1_kill_switch()
-    await phase2_revoked()
-    await phase3_tamper()
-    await phase4_success()
+    print("Delta-OTA simulation - in-process E2E.")
+    selected = sys.argv[1] if len(sys.argv) > 1 else "1,2,3,4"
+    want = {s.strip() for s in selected.split(",")}
+    ran = []
+    if "1" in want:
+        await phase1_kill_switch()
+        ran.append("1")
+    if "2" in want:
+        await phase2_revoked()
+        ran.append("2")
+    if "3" in want:
+        await phase3_tamper()
+        ran.append("3")
+    if "4" in want:
+        await phase4_success()
+        ran.append("4")
+    if not ran:
+        print(f"No phases selected from {selected!r} - nothing ran.")
+        sys.exit(2)
 
     print("\n" + "=" * 62)
     if FAILURES == 0:
-        print("  SIMULATION RESULT: ALL PHASES PASSED")
+        print(f"  SIMULATION RESULT: PHASES {','.join(ran)} PASSED")
     else:
         print(f"  SIMULATION RESULT: {FAILURES} PHASE(S) FAILED")
     print("=" * 62)
