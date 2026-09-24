@@ -12,6 +12,9 @@ so each pass uses a FRESH socket - reusing MIDs from the same port would
 replay the previous pass's cached responses (RFC 7252, section 4.5).
 
 Run:  python simulation/block_client.py
+      Tamper-sequence mode (Day 3): TAMPER_BLOCKS="0,1" EXPECT_ABORT=0
+      corrupts the listed block indices on disk, then fetches through a
+      DeviceSession (fault counter + abort threshold). Default run unchanged.
 """
 import sys
 from pathlib import Path
@@ -20,6 +23,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import asyncio
+import os
 import socket
 
 import aiocoap
@@ -29,6 +33,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESCCM
 
 from coap_server import FirmwareResource, PatchBlockResource, get_lan_ip
 from security_engine import SecurityEngine
+from simulated_device import AUTH_FAIL_THRESHOLD, DeviceSession
 from main_gateway import ARTIFACT_DIR, BLOCKS_DIR, DUMMY_PATCH, PRE_SHARED_KEY
 
 SERVER_PORT = 5683
@@ -130,6 +135,75 @@ async def run_pass(loop, server_ip: str, payload_path: Path, label: str):
         client.close()
 
 
+async def run_tamper_pass(loop, server_ip: str, payload_path: Path, label: str,
+                       tamper: set, expect_abort: bool):
+    """Day 3: corrupt listed block frames, fetch through a DeviceSession.
+
+    Asserts per-block detection (tampered -> InvalidTag, clean -> OK), the
+    abort decision at exactly AUTH_FAIL_THRESHOLD consecutive faults, and
+    that a corrupted transfer never reassembles to the original bytes.
+    """
+    print(f"\n--- {label} ---")
+    engine = SecurityEngine()
+    count = await loop.run_in_executor(
+        None, engine.encrypt_blocks, payload_path, BLOCKS_DIR, PRE_SHARED_KEY)
+    print(f"[Harness] {count} block frame(s) staged from {payload_path.name}.")
+    if not check("block count > 0", count > 0, True):
+        return
+    if any(i < 0 or i >= count for i in tamper):
+        check(f"tamper indices {sorted(tamper)} within range", False, True)
+        return
+
+    for i in sorted(tamper):
+        frame_path = BLOCKS_DIR / f"block_{i}.bin"
+        frame = bytearray(frame_path.read_bytes())
+        frame[-1] ^= 0x01
+        frame_path.write_bytes(bytes(frame))
+        print(f"    [Harness] Corrupted tag of block {i} (byte {len(frame) - 1} flipped).")
+
+    session = DeviceSession()
+    client = RawBlockClient(server_ip)
+    plaintext_parts = []
+    try:
+        for index in range(count):
+            code, body = await loop.run_in_executor(None, client.get_block, index)
+            expected = CHANGED if index == count - 1 else CONTENT
+            check(f"block {index} code", code, expected)
+            if code not in (CONTENT, CHANGED):
+                print(f"    -> [FAIL] block {index} transport fault")
+                if session.feed(False) == "ABORT":
+                    break
+                continue
+            try:
+                plaintext_parts.append(
+                    AESCCM(PRE_SHARED_KEY).decrypt(body[:13], body[13:], None))
+                outcome = "OK" if index not in tamper else "UNEXPECTED-OK"
+                print(f"    -> [{'PASS' if outcome == 'OK' else 'FAIL'}] "
+                      f"block {index} auth-decrypt ({len(body)} B frame)")
+                if session.feed(True) == "ABORT":
+                    break
+            except InvalidTag:
+                outcome = "FAIL" if index in tamper else "UNEXPECTED-FAIL"
+                print(f"    -> [{'PASS' if outcome == 'FAIL' else 'FAIL'}] "
+                      f"block {index} auth-decrypt rejected (tag mismatch)")
+                check(f"block {index} tamper detected", index in tamper, True)
+                if session.feed(False) == "ABORT":
+                    print("    [Device] ABORT: 3 consecutive faults - "
+                          "rolling back to previous firmware.")
+                    break
+    finally:
+        client.close()
+
+    check("device aborted", session.aborted, expect_abort)
+    if expect_abort:
+        check("faults reached threshold", session.auth_faults, AUTH_FAIL_THRESHOLD)
+    else:
+        check("fault counter reset by healthy block", session.auth_faults, 0)
+    reassembled = b"".join(plaintext_parts)
+    check("tampered transfer never reassembles clean",
+          reassembled == payload_path.read_bytes(), False)
+
+
 async def main():
     print("Delta-OTA block-protocol harness - raw UDP, MID-indexed GET /patch.")
     loop = asyncio.get_running_loop()
@@ -143,6 +217,21 @@ async def main():
     print(f"[Harness] Server up on {server_ip}:{SERVER_PORT}.")
 
     try:
+        tamper = os.environ.get("TAMPER_BLOCKS")
+        if tamper is not None:
+            indices = {int(s) for s in tamper.split(",") if s.strip() != ""}
+            label = os.environ.get("TAMPER_LABEL", f"tamper pass [{tamper}]")
+            expect_abort = os.environ.get("EXPECT_ABORT", "0") == "1"
+            print(f"[Harness] Tamper-sequence mode: corrupt {sorted(indices)}, "
+                  f"expect_abort={expect_abort}.")
+            big = ARTIFACT_DIR / "harness_payload.bin"
+            big.write_bytes((b"firmware-image-v1.1:" * 160)[:3000])
+            try:
+                await run_tamper_pass(loop, server_ip, big, label, indices, expect_abort)
+            finally:
+                big.unlink(missing_ok=True)
+            return
+
         # Pass 1: the real verified payload (single block exercises 2.04-final).
         await run_pass(loop, server_ip, DUMMY_PATCH, "pass 1/2: real payload")
 

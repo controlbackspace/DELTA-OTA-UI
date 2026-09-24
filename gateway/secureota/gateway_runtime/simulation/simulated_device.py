@@ -25,6 +25,42 @@ NONCE_LEN = 13      # 13-byte OSCORE nonce written by the gateway
 TAG_LEN = 16        # 16-byte tag == cryptography.AESCCM() default
 PRE_SHARED_KEY = b"TEST_KEY_1234567"
 
+# Consecutive-fault abort threshold - MUST match AUTH_FAIL_THRESHOLD in
+# ESP32 main.cpp. A healthy block resets the counter; the 3rd consecutive
+# fault aborts the transfer (device rolls back to the previous firmware).
+AUTH_FAIL_THRESHOLD = 3
+
+
+class DeviceSession:
+    """Stateful per-transfer fault tracker: the Python mirror of the ESP32
+    `_authFaults` counter (main.cpp processIncomingPacket).
+
+    Feed one boolean per received block: True = auth-decrypt OK, False =
+    fault (tag mismatch, oversized chunk, transport error). Returns
+    "CONTINUE" until the threshold trip, then "ABORT" - the rollback
+    *decision*. Rollback *execution* (esp_ota_mark_app_invalid_rollback_and_
+    reboot) needs real flash and stays hardware-side.
+    """
+
+    def __init__(self):
+        self.auth_faults = 0
+        self.blocks_ok = 0
+        self.aborted = False
+
+    def feed(self, ok: bool):
+        """Record one block outcome. Returns "CONTINUE" or "ABORT"."""
+        if self.aborted:
+            return "ABORT"
+        if ok:
+            self.auth_faults = 0
+            self.blocks_ok += 1
+            return "CONTINUE"
+        self.auth_faults += 1
+        if self.auth_faults >= AUTH_FAIL_THRESHOLD:
+            self.aborted = True
+            return "ABORT"
+        return "CONTINUE"
+
 
 def process_frame(code, payload):
     """Mirror of the ESP32 D2-D4 pipeline, as importable Python.
