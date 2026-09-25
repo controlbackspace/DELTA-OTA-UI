@@ -235,11 +235,24 @@ async def main():
         # Pass 1: the real verified payload (single block exercises 2.04-final).
         await run_pass(loop, server_ip, DUMMY_PATCH, "pass 1/2: real payload")
 
-        # Pass 2: deterministic 3000-byte image -> 3 blocks, multi-chunk path.
-        big = ARTIFACT_DIR / "harness_payload.bin"
-        big.write_bytes((b"firmware-image-v1.1:" * 160)[:3000])
+        # Pass 2: deterministic patterned image -> multi-chunk path.
+        # HARNESS_IMAGE_BYTES scales it (default 3000 = 3 blocks); e.g. 131072
+        # exercises 128 sequential blocks, the D4 at-scale proxy for O(1)
+        # per-chunk device memory.
         try:
-            await run_pass(loop, server_ip, big, "pass 2/2: multi-block image")
+            img_size = int(os.environ.get("HARNESS_IMAGE_BYTES", "3000"))
+            if img_size <= 0:
+                raise ValueError
+        except ValueError:
+            print(f"[Harness] FATAL: bad HARNESS_IMAGE_BYTES="
+                  f"{os.environ.get('HARNESS_IMAGE_BYTES')!r} (need a positive int).")
+            sys.exit(2)
+        pattern = b"firmware-image-v1.1:"
+        big = ARTIFACT_DIR / "harness_payload.bin"
+        big.write_bytes((pattern * (img_size // len(pattern) + 1))[:img_size])
+        try:
+            await run_pass(loop, server_ip, big,
+                           f"pass 2/2: {img_size}-byte image multi-chunk path")
         finally:
             big.unlink(missing_ok=True)
     finally:
