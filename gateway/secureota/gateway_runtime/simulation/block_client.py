@@ -15,6 +15,9 @@ Run:  python simulation/block_client.py
       Tamper-sequence mode (Day 3): TAMPER_BLOCKS="0,1" EXPECT_ABORT=0
       corrupts the listed block indices on disk, then fetches through a
       DeviceSession (fault counter + abort threshold). Default run unchanged.
+      Drop mode (Day 5): DROP_AFTER_BLOCKS=3 [HARNESS_IMAGE_BYTES=8192]
+      kills the server mid-transfer; remaining fetches must time out with no
+      2.04 finalize ever signaled.
 """
 import sys
 from pathlib import Path
@@ -66,14 +69,19 @@ class RawBlockClient:
         self.sock.settimeout(timeout)
 
     def get_block(self, index: int):
-        """One exchange. Returns (code, body) or (None, b"") on timeout."""
+        """One exchange. Returns (code, body), or (None, b"") on no reply.
+
+        No reply covers both silence (timeout) and ICMP port-unreachable:
+        on Windows a datagram to a dead socket raises ConnectionResetError
+        instead of timing out. Either way the device observes nothing.
+        """
         hi, lo = (index >> 8) & 0xFF, index & 0xFF
         # ver=1, CON, TKL=0 | GET | MID=index, then Uri-Path "patch" (delta 11, len 5).
         datagram = bytes([0x40, 0x01, hi, lo, 0xB5]) + b"patch"
         try:
             self.sock.sendto(datagram, self.addr)
             raw, _ = self.sock.recvfrom(65535)
-        except socket.timeout:
+        except (socket.timeout, ConnectionResetError, OSError):
             return None, b""
         tkl = raw[0] & 0x0F
         code = raw[1]
@@ -204,6 +212,62 @@ async def run_tamper_pass(loop, server_ip: str, payload_path: Path, label: str,
           reassembled == payload_path.read_bytes(), False)
 
 
+async def run_drop_pass(loop, server_ip: str, payload_path: Path, label: str,
+                       img_size: int, drop_after: int, kill_server):
+    """Day 5: network drop mid-transfer. Fetch drop_after blocks clean, then
+    the server socket dies; the rest must time out, the 2.04 finalize signal
+    must never arrive (no commit without it - cf. main.cpp _finalizePatch),
+    and the partial transfer must not match the payload (stale half-image
+    is never bootable). Transport timeouts are recorded, not fed to the
+    auth-fault counter: silence is not tampering.
+    """
+    print(f"\n--- {label} ---")
+    engine = SecurityEngine()
+    count = await loop.run_in_executor(
+        None, engine.encrypt_blocks, payload_path, BLOCKS_DIR, PRE_SHARED_KEY)
+    print(f"[Harness] {count} block frame(s) staged from {payload_path.name}.")
+    if not check("block count > drop point", count > drop_after, True):
+        return
+
+    client = RawBlockClient(server_ip)
+    received = []
+    saw_changed = False
+    timeouts = 0
+    try:
+        for index in range(drop_after):
+            code, body = await loop.run_in_executor(None, client.get_block, index)
+            expected = CHANGED if index == count - 1 else CONTENT
+            check(f"block {index} code (pre-drop)", code, expected)
+            if code not in (CONTENT, CHANGED):
+                check(f"block {index} pre-drop reachable", code, expected)
+                return
+            try:
+                received.append(
+                    AESCCM(PRE_SHARED_KEY).decrypt(body[:13], body[13:], None))
+            except InvalidTag:
+                check(f"block {index} pre-drop authentic", "InvalidTag", "OK")
+                return
+            saw_changed = saw_changed or (code == CHANGED)
+        print(f"    [Harness] Killing server socket after block {drop_after - 1}...")
+        await kill_server()
+
+        for index in range(drop_after, count):
+            code, _body = await loop.run_in_executor(None, client.get_block, index)
+            if code is None:
+                timeouts += 1
+                print(f"    -> [PASS] block {index} timed out (no reply, transfer stalls)")
+            else:
+                check(f"block {index} post-drop silent", code, None)
+    finally:
+        client.close()
+
+    check("blocks received before drop", len(received), drop_after)
+    check("post-drop fetches all timed out", timeouts, count - drop_after)
+    check("finalize (2.04) never signaled - no commit", saw_changed, False)
+    check("partial transfer is not the payload",
+          b"".join(received) == payload_path.read_bytes(), False)
+
+
 async def main():
     print("Delta-OTA block-protocol harness - raw UDP, MID-indexed GET /patch.")
     loop = asyncio.get_running_loop()
@@ -218,6 +282,7 @@ async def main():
 
     try:
         tamper = os.environ.get("TAMPER_BLOCKS")
+        drop_after = os.environ.get("DROP_AFTER_BLOCKS")
         if tamper is not None:
             indices = {int(s) for s in tamper.split(",") if s.strip() != ""}
             label = os.environ.get("TAMPER_LABEL", f"tamper pass [{tamper}]")
@@ -230,31 +295,51 @@ async def main():
                 await run_tamper_pass(loop, server_ip, big, label, indices, expect_abort)
             finally:
                 big.unlink(missing_ok=True)
-            return
+        elif drop_after is not None:
+            try:
+                drop_at = int(drop_after)
+                img_size = int(os.environ.get("HARNESS_IMAGE_BYTES", "8192"))
+                if drop_at <= 0 or img_size <= 0:
+                    raise ValueError
+            except ValueError:
+                print(f"[Harness] FATAL: bad DROP_AFTER_BLOCKS={drop_after!r} or "
+                      f"HARNESS_IMAGE_BYTES={os.environ.get('HARNESS_IMAGE_BYTES')!r}.")
+                sys.exit(2)
+            label = os.environ.get("TAMPER_LABEL", f"drop pass (kill after block {drop_at - 1})")
+            print(f"[Harness] Drop mode: {img_size}-byte image, server dies after "
+                  f"block {drop_at - 1}.")
+            pattern = b"firmware-image-v1.1:"
+            big = ARTIFACT_DIR / "harness_payload.bin"
+            big.write_bytes((pattern * (img_size // len(pattern) + 1))[:img_size])
+            try:
+                await run_drop_pass(loop, server_ip, big, label, img_size, drop_at,
+                                    lambda: shutdown_ctx(ctx))
+            finally:
+                big.unlink(missing_ok=True)
+        else:
+            # Pass 1: the real verified payload (single block exercises 2.04-final).
+            await run_pass(loop, server_ip, DUMMY_PATCH, "pass 1/2: real payload")
 
-        # Pass 1: the real verified payload (single block exercises 2.04-final).
-        await run_pass(loop, server_ip, DUMMY_PATCH, "pass 1/2: real payload")
-
-        # Pass 2: deterministic patterned image -> multi-chunk path.
-        # HARNESS_IMAGE_BYTES scales it (default 3000 = 3 blocks); e.g. 131072
-        # exercises 128 sequential blocks, the D4 at-scale proxy for O(1)
-        # per-chunk device memory.
-        try:
-            img_size = int(os.environ.get("HARNESS_IMAGE_BYTES", "3000"))
-            if img_size <= 0:
-                raise ValueError
-        except ValueError:
-            print(f"[Harness] FATAL: bad HARNESS_IMAGE_BYTES="
-                  f"{os.environ.get('HARNESS_IMAGE_BYTES')!r} (need a positive int).")
-            sys.exit(2)
-        pattern = b"firmware-image-v1.1:"
-        big = ARTIFACT_DIR / "harness_payload.bin"
-        big.write_bytes((pattern * (img_size // len(pattern) + 1))[:img_size])
-        try:
-            await run_pass(loop, server_ip, big,
-                           f"pass 2/2: {img_size}-byte image multi-chunk path")
-        finally:
-            big.unlink(missing_ok=True)
+            # Pass 2: deterministic patterned image -> multi-chunk path.
+            # HARNESS_IMAGE_BYTES scales it (default 3000 = 3 blocks); e.g. 131072
+            # exercises 128 sequential blocks, the D4 at-scale proxy for O(1)
+            # per-chunk device memory.
+            try:
+                img_size = int(os.environ.get("HARNESS_IMAGE_BYTES", "3000"))
+                if img_size <= 0:
+                    raise ValueError
+            except ValueError:
+                print(f"[Harness] FATAL: bad HARNESS_IMAGE_BYTES="
+                      f"{os.environ.get('HARNESS_IMAGE_BYTES')!r} (need a positive int).")
+                sys.exit(2)
+            pattern = b"firmware-image-v1.1:"
+            big = ARTIFACT_DIR / "harness_payload.bin"
+            big.write_bytes((pattern * (img_size // len(pattern) + 1))[:img_size])
+            try:
+                await run_pass(loop, server_ip, big,
+                               f"pass 2/2: {img_size}-byte image multi-chunk path")
+            finally:
+                big.unlink(missing_ok=True)
     finally:
         await shutdown_ctx(ctx)
 
