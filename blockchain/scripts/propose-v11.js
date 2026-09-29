@@ -17,6 +17,8 @@ import path from "node:path";
  * Usage: DELTA_CONTRACT_ADDRESS=0x... npx hardhat run scripts/propose-v11.js --network localhost
  *   REVOKE_RELEASE=1  ...then revoke v1.1 as Dev1 (Day-2 kill-switch setup)
  *   BAD_HASH=1        ...propose with a wrong golden hash (Day-2 mismatch setup)
+ *   GOLDEN_HASH=<hex> ...propose with this hash instead of dummy_patch.bin's
+ *                 (hardware runs: sha256 of the real firmware image)
  */
 async function main() {
   const contractAddr = process.env.DELTA_CONTRACT_ADDRESS;
@@ -25,7 +27,11 @@ async function main() {
   }
 
   const dummyPath = path.resolve("..", "gateway", "artifacts", "dummy_patch.bin");
-  const goldenHashHex = createHash("sha256").update(readFileSync(dummyPath)).digest("hex");
+  const fileHashHex = process.env.GOLDEN_HASH ||
+    createHash("sha256").update(readFileSync(dummyPath)).digest("hex");
+  if (process.env.GOLDEN_HASH) {
+    console.log("GOLDEN_HASH override: proposing with the provided image hash.");
+  }
 
   const versionBytes32 = hre.ethers.encodeBytes32String("v1.1");
 
@@ -45,7 +51,7 @@ async function main() {
   // Nonzero but wrong on purpose: the contract rejects an all-zero golden
   // hash at propose time, so BAD_HASH uses the hash of a wrong payload.
   const wrongHashHex = createHash("sha256").update("wrong-payload").digest("hex");
-  const goldenBytes32 = process.env.BAD_HASH === "1" ? "0x" + wrongHashHex : "0x" + goldenHashHex;
+  const goldenBytes32 = process.env.BAD_HASH === "1" ? "0x" + wrongHashHex : "0x" + fileHashHex;
   if (process.env.BAD_HASH === "1") {
     console.log("BAD_HASH=1: proposing with a wrong golden hash (mismatch setup).");
   }

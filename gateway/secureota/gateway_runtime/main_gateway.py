@@ -1,5 +1,6 @@
 import asyncio
 import json
+import os
 from pathlib import Path
 from coap_server import start_coap_server
 from blockchain_poller import BlockchainPoller
@@ -14,6 +15,11 @@ TARGET_VERSION = "v1.1"
 POLL_INTERVAL = 5
 PRE_SHARED_KEY = b"TEST_KEY_1234567"
 BLOCKS_DIR = ARTIFACT_DIR / "blocks"  # per-chunk frames for the ESP32 /patch protocol
+
+# Payload override for hardware runs: DELTA_PAYLOAD points at a real firmware
+# image (e.g. artifacts/firmware_v1.1.bin). Default is the dummy fixture, so
+# every filed sim/test run is unaffected.
+PAYLOAD_PATH = Path(os.environ.get("DELTA_PAYLOAD", str(DUMMY_PATCH)))
 
 
 def _clear_block_frames():
@@ -65,18 +71,28 @@ async def main_loop():
         if release_data["isLive"] is True and release_data["version"] != installed_version:
             print(f"Success! New Update ({release_data['version']}) is Live.")
             
-            isValid = engine.verify_firmware_integrity(release_data, str(DUMMY_PATCH))
+            isValid = engine.verify_firmware_integrity(release_data, str(PAYLOAD_PATH))
 
             if isValid is True:
                 print("Verified! Moving to encryption!")
 
-                engine.encrypt_payload(
-                    DUMMY_PATCH, 
-                    ENCRYPTED_PATCH, 
-                    PRE_SHARED_KEY
-                )
-                
-                engine.encrypt_blocks(DUMMY_PATCH, BLOCKS_DIR, PRE_SHARED_KEY)
+                try:
+                    engine.encrypt_payload(
+                        PAYLOAD_PATH,
+                        ENCRYPTED_PATCH,
+                        PRE_SHARED_KEY
+                    )
+                except ValueError as e:
+                    # CCM with a 13-byte nonce caps a single frame at 64 KB
+                    # (L=2 length field). Firmware-scale payloads skip the
+                    # whole-frame artifact and serve block frames only - the
+                    # production OTA path. Remove any stale frame so
+                    # /firmware answers 4.01 instead of serving old bytes.
+                    print(f"[Encryption] Whole-frame skipped ({e}); "
+                          f"serving block frames only.")
+                    ENCRYPTED_PATCH.unlink(missing_ok=True)
+
+                engine.encrypt_blocks(PAYLOAD_PATH, BLOCKS_DIR, PRE_SHARED_KEY)
 
                 installed_version = release_data["version"]
                 
