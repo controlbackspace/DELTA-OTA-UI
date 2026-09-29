@@ -23,6 +23,7 @@ export interface WalletQrModalProps {
   connectedAddress?: string | null;
   onSelectDevAccount: (devIndex: number) => void;
   onConnectInjected: () => Promise<unknown>;
+  onOpenWalletConnect: () => void;
   contractAddress: string;
   onUpdateContractAddress: (addr: string) => void;
   statusMessage?: string | null;
@@ -35,6 +36,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   connectedAddress,
   onSelectDevAccount,
   onConnectInjected,
+  onOpenWalletConnect,
   contractAddress,
   onUpdateContractAddress,
   statusMessage,
@@ -45,13 +47,15 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   const [injectedLoading, setInjectedLoading] = useState<boolean>(false);
   const [injectedError, setInjectedError] = useState<string | null>(null);
 
-  // Generate simulated or real WalletConnect URI
-  const effectiveUri =
-    connectionUri ||
-    `wc:7f9a2b4c-6d8e-4a1b-9c2d-3e4f5a6b7c8d@2?relay-protocol=irn&symKey=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2&chainId=eip155:31337`;
+  // A QR is rendered ONLY from a live session URI. There is deliberately no
+  // fallback URI: a fabricated code pairs with nothing and hangs both ends.
+  const effectiveUri = connectionUri ?? null;
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!isOpen || !effectiveUri) {
+      setQrDataUrl("");
+      return;
+    }
 
     QRCode.toDataURL(effectiveUri, {
       width: 280,
@@ -68,6 +72,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   if (!isOpen) return null;
 
   const handleCopyUri = () => {
+    if (!effectiveUri) return;
     void navigator.clipboard.writeText(effectiveUri);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
@@ -166,56 +171,82 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                 </div>
               </div>
 
-              {/* QR Code Canvas Frame */}
-              <div className="relative p-4 rounded-xl border-2 border-dashed border-cyan-500/40 bg-[#05080f] shadow-inner flex flex-col items-center justify-center">
-                {qrDataUrl ? (
-                  <img
-                    src={qrDataUrl}
-                    alt="WalletConnect QR Code"
-                    className="w-56 h-56 rounded-lg shadow-md transition-transform hover:scale-102 duration-200"
-                  />
-                ) : (
-                  <div className="w-56 h-56 flex items-center justify-center text-slate-500 text-xs">
-                    <RefreshCw className="w-6 h-6 animate-spin text-cyan-400 mb-2" />
-                    Generating QR code...
+              {/* QR Code Canvas Frame — live session URI only, never a placeholder */}
+              {effectiveUri ? (
+                <>
+                  <div className="relative p-4 rounded-xl border-2 border-dashed border-cyan-500/40 bg-[#05080f] shadow-inner flex flex-col items-center justify-center">
+                    {qrDataUrl ? (
+                      <img
+                        src={qrDataUrl}
+                        alt="WalletConnect QR Code"
+                        className="w-56 h-56 rounded-lg shadow-md transition-transform hover:scale-102 duration-200"
+                      />
+                    ) : (
+                      <div className="w-56 h-56 flex items-center justify-center text-slate-500 text-xs">
+                        <RefreshCw className="w-6 h-6 animate-spin text-cyan-400 mb-2" />
+                        Generating QR code...
+                      </div>
+                    )}
+                    <div className="absolute top-2 right-2">
+                      <StatusPill color="emerald" label="Live WC 2.0" dot />
+                    </div>
                   </div>
-                )}
-                <div className="absolute top-2 right-2">
-                  <StatusPill color="emerald" label="Live WC 2.0" dot />
+
+                  {/* Copy URI button */}
+                  <div className="w-full flex gap-2">
+                    <button
+                      type="button"
+                      onClick={handleCopyUri}
+                      className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-slate-700 bg-slate-900/60 hover:bg-slate-800 text-xs text-slate-200 transition-all font-sans"
+                    >
+                      {copied ? (
+                        <>
+                          <Check className="w-3.5 h-3.5 text-emerald-400" />
+                          <span className="text-emerald-400">Connection URI Copied!</span>
+                        </>
+                      ) : (
+                        <>
+                          <Copy className="w-3.5 h-3.5 text-slate-400" />
+                          <span>Copy WalletConnect URI</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Direct injected extension connect */}
+                    <button
+                      type="button"
+                      onClick={handleInjected}
+                      disabled={injectedLoading}
+                      className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/40 text-xs text-cyan-300 transition-all font-sans"
+                    >
+                      <ExternalLink className="w-3.5 h-3.5" />
+                      {injectedLoading ? "Connecting..." : "Use Browser Extension"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="w-full p-4 rounded-lg bg-amber-950/30 border border-amber-900/50 text-left space-y-3">
+                  <div className="flex items-center gap-2">
+                    <StatusPill color="amber" label="No session" />
+                    <span className="text-xs text-amber-300 font-sans font-medium">
+                      No active WalletConnect session.
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 font-sans">
+                    {statusMessage ||
+                      "Start a real pairing session first — a QR appears here only for a live session."}{" "}
+                    Dev signers (next tab) need no session at all.
+                  </p>
+                  <button
+                    type="button"
+                    onClick={onOpenWalletConnect}
+                    className="flex items-center gap-2 px-4 py-2.5 rounded-lg border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/40 text-xs text-cyan-300 transition-all font-sans"
+                  >
+                    <RefreshCw className="w-3.5 h-3.5" />
+                    Open WalletConnect
+                  </button>
                 </div>
-              </div>
-
-              {/* Copy URI button */}
-              <div className="w-full flex gap-2">
-                <button
-                  type="button"
-                  onClick={handleCopyUri}
-                  className="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-slate-700 bg-slate-900/60 hover:bg-slate-800 text-xs text-slate-200 transition-all font-sans"
-                >
-                  {copied ? (
-                    <>
-                      <Check className="w-3.5 h-3.5 text-emerald-400" />
-                      <span className="text-emerald-400">Connection URI Copied!</span>
-                    </>
-                  ) : (
-                    <>
-                      <Copy className="w-3.5 h-3.5 text-slate-400" />
-                      <span>Copy WalletConnect URI</span>
-                    </>
-                  )}
-                </button>
-
-                {/* Direct injected extension connect */}
-                <button
-                  type="button"
-                  onClick={handleInjected}
-                  disabled={injectedLoading}
-                  className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/40 text-xs text-cyan-300 transition-all font-sans"
-                >
-                  <ExternalLink className="w-3.5 h-3.5" />
-                  {injectedLoading ? "Connecting..." : "Use Browser Extension"}
-                </button>
-              </div>
+              )}
 
               {injectedError && (
                 <div className="text-[11px] text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50 w-full text-left">

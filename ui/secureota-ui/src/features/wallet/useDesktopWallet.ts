@@ -1,4 +1,4 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { ethers } from "ethers";
 import { createAppKit } from "@reown/appkit/react";
 import { EthersAdapter } from "@reown/appkit-adapter-ethers";
@@ -13,11 +13,14 @@ import {
   truncateAddress,
 } from "../../lib/web3Payloads";
 
-// WalletConnect Project ID for Reown AppKit
-// For local simulation, we provide a valid format project ID or read from env
+// WalletConnect Project ID for Reown AppKit (public client identifier —
+// shipped in the bundle by design, not a secret). Env override wins when set.
 export const REOWN_PROJECT_ID =
   (import.meta as unknown as { env: Record<string, string> }).env?.VITE_REOWN_PROJECT_ID ||
-  "c585c542c3886b61a38fb9279093e0e7";
+  "77a796e27254e03bf5ae9b9aba69b93b";
+
+// Hardhat Localhost chain id (single source of truth for guards below)
+export const HARDHAT_CHAIN_ID = 31337;
 
 // Define network definition for AppKit
 export const localhostNetwork = {
@@ -64,10 +67,14 @@ export function getAppKit() {
   return appKitInstance;
 }
 
+/** Which key actually signed: phone wallet, browser extension, or node fallback. */
+export type SignerOrigin = "wallet" | "injected" | "dev-node";
+
 export interface ContractTransactionReceipt {
   hash: string;
   blockNumber: number;
   from: string;
+  origin: SignerOrigin;
 }
 
 export function useDesktopWallet() {
@@ -151,7 +158,10 @@ export function useDesktopWallet() {
         setIsQrModalOpen(true);
       }
     } catch (err) {
-      console.warn("AppKit modal open failed, falling back to custom QR overlay:", err);
+      // Never fail silently: the overlay stays open as the error surface
+      // (its QR tab renders the failure + retry instead of any QR code).
+      const msg = err instanceof Error ? err.message : "Unknown error starting WalletConnect";
+      setStatusMessage(`WalletConnect failed: ${msg} — retry from the QR tab or use a Dev signer.`);
       setIsQrModalOpen(true);
     } finally {
       setIsConnecting(false);
@@ -192,20 +202,96 @@ export function useDesktopWallet() {
     }
   }, []);
 
-  // Get active ethers Signer (via injected provider or local JSON-RPC provider)
-  const getSigner = useCallback(async (): Promise<ethers.Signer> => {
+  const [signerOrigin, setSignerOrigin] = useState<SignerOrigin | null>(null);
+
+  const normalizeAddress = (addr: string | undefined): string | null => {
+    if (!addr) return null;
+    // AppKit may report CAIP `eip155:<chain>:<0x...>` — keep the hex tail.
+    const parts = addr.split(":");
+    const tail = parts[parts.length - 1];
+    return tail || null;
+  };
+
+  // Keep UI identity in sync with the real AppKit session (QR-paired phone
+  // included). Fires on connect, account switch, and disconnect/expiry.
+  useEffect(() => {
+    const modal = getAppKit();
+    if (!modal) return;
+    const sync = (s: { address?: string; isConnected?: boolean }) => {
+      const addr = normalizeAddress(s.address);
+      setAddress(addr);
+      setIsConnected(s.isConnected === true && addr !== null);
+      if (addr) {
+        setStatusMessage(`Connected: ${truncateAddress(addr)}`);
+      } else if (s.isConnected === false) {
+        setStatusMessage("Wallet disconnected (session ended — re-scan to reconnect)");
+      }
+    };
+    // Seed from a possibly restored WalletConnect session.
+    try {
+      const current = modal.getAccount() as unknown as
+        { address?: string; isConnected?: boolean } | undefined;
+      if (current) sync(current);
+    } catch {
+      // ignore — subscription below covers live changes
+    }
+    const unsub = modal.subscribeAccount(sync);
+    return unsub;
+  }, []);
+
+  // Resolve the EIP-1193 provider of an AppKit-paired wallet (MetaMask
+  // Mobile via QR). Null when no wallet session is active.
+  const getAppKitWalletProvider = (): ethers.Eip1193Provider | null => {
+    try {
+      const modal = getAppKit();
+      const wp = modal?.getWalletProvider() as unknown as
+        ethers.Eip1193Provider | undefined;
+      return wp ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  // Signer priority: real phone wallet first, browser extension second,
+  // Hardhat unlocked accounts last (labeled dev fallback — no phone prompt).
+  // Throws a clear error when the active wallet sits on the wrong chain.
+  const getSigner = useCallback(async (): Promise<{
+    signer: ethers.Signer;
+    origin: SignerOrigin;
+  }> => {
+    const wc = getAppKitWalletProvider();
+    if (wc) {
+      const provider = new ethers.BrowserProvider(wc);
+      const net = await provider.getNetwork();
+      if (Number(net.chainId) !== HARDHAT_CHAIN_ID) {
+        throw new Error(
+          `Wallet is on chain ${net.chainId} — switch MetaMask to Hardhat Localhost (chain ${HARDHAT_CHAIN_ID}).`
+        );
+      }
+      setSignerOrigin("wallet");
+      return { signer: await provider.getSigner(), origin: "wallet" as const };
+    }
     const injected = await getInjectedProvider();
     if (injected) {
-      return await injected.getSigner();
+      const net = await injected.getNetwork();
+      if (Number(net.chainId) !== HARDHAT_CHAIN_ID) {
+        throw new Error(
+          `Injected wallet is on chain ${net.chainId} — switch to Hardhat Localhost (chain ${HARDHAT_CHAIN_ID}).`
+        );
+      }
+      setSignerOrigin("injected");
+      return { signer: await injected.getSigner(), origin: "injected" as const };
     }
-    // In desktop or headless mode without injected window.ethereum,
-    // connect to local Hardhat JSON-RPC node directly (http://127.0.0.1:8545)
+    // In desktop or headless mode without any wallet, sign with the local
+    // Hardhat node's unlocked accounts (http://127.0.0.1:8545). No phone
+    // prompt happens on this path — callers must label it honestly.
     const jsonRpcProvider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+    setSignerOrigin("dev-node");
     if (address) {
-      return await jsonRpcProvider.getSigner(address);
+      return { signer: await jsonRpcProvider.getSigner(address), origin: "dev-node" as const };
     }
     // Default to first account on the node
-    return await jsonRpcProvider.getSigner(0);
+    return { signer: await jsonRpcProvider.getSigner(0), origin: "dev-node" as const };
   }, [address, getInjectedProvider]);
 
   /**
@@ -217,7 +303,7 @@ export function useDesktopWallet() {
       goldenHash: string,
       ipfsUrl: string
     ): Promise<ContractTransactionReceipt> => {
-      const signer = await getSigner();
+      const { signer, origin } = await getSigner();
       const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, signer);
 
       const versionBytes32 = formatVersionBytes32(version);
@@ -232,6 +318,7 @@ export function useDesktopWallet() {
         hash: receipt.hash,
         blockNumber: receipt.blockNumber,
         from: receipt.from,
+        origin,
       };
     },
     [contractAddress, getSigner]
@@ -242,7 +329,7 @@ export function useDesktopWallet() {
    */
   const approveRelease = useCallback(
     async (version: string): Promise<ContractTransactionReceipt> => {
-      const signer = await getSigner();
+      const { signer, origin } = await getSigner();
       const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, signer);
 
       const versionBytes32 = formatVersionBytes32(version);
@@ -256,6 +343,7 @@ export function useDesktopWallet() {
         hash: receipt.hash,
         blockNumber: receipt.blockNumber,
         from: receipt.from,
+        origin,
       };
     },
     [contractAddress, getSigner]
@@ -266,7 +354,7 @@ export function useDesktopWallet() {
    */
   const revokeRelease = useCallback(
     async (version: string): Promise<ContractTransactionReceipt> => {
-      const signer = await getSigner();
+      const { signer, origin } = await getSigner();
       const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, signer);
 
       const versionBytes32 = formatVersionBytes32(version);
@@ -280,6 +368,7 @@ export function useDesktopWallet() {
         hash: receipt.hash,
         blockNumber: receipt.blockNumber,
         from: receipt.from,
+        origin,
       };
     },
     [contractAddress, getSigner]
@@ -313,6 +402,7 @@ export function useDesktopWallet() {
     isQrModalOpen,
     contractAddress,
     statusMessage,
+    signerOrigin,
     updateContractAddress,
     connectInjected,
     openWalletModal,

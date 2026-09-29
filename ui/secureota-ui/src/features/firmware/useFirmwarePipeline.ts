@@ -97,7 +97,10 @@ export function useFirmwarePipeline() {
 
   const addLog = useCallback((message: string, type: LogEntry["type"] = "info") => {
     const time = new Date().toLocaleTimeString("en-US", { hour12: false });
-    setLogs((prev) => [{ id: Date.now() + Math.random(), time, message, type }, ...prev]);
+    // Append (tail -f order): the terminal autoscrolls to the bottom, so new
+    // entries must land at the end. Prepending parks fresh logs above an
+    // viewport pinned on stale content.
+    setLogs((prev) => [...prev, { id: Date.now() + Math.random(), time, message, type }]);
   }, []);
 
   const handleLoadBinaries = async () => {
@@ -216,8 +219,11 @@ export function useFirmwarePipeline() {
   const handleConnectWallet = async () => {
     if (!urlConfigured || loadingStep) return;
     setLoadingStep("wallet");
-    addLog("[Web3] Opening Desktop Wallet Connection & QR Code Modal...", "info");
-    wallet.openCustomQrModal();
+    // Real WalletConnect session via AppKit (genuine pairing QR inside the
+    // AppKit modal). Step completion still syncs from wallet.isConnected, so
+    // closing the modal unconnected leaves the step honestly incomplete.
+    addLog("[Web3] Opening WalletConnect session (real pairing — scan the AppKit QR)...", "info");
+    await wallet.openWalletModal();
     setLoadingStep(null);
   };
 
@@ -243,6 +249,7 @@ export function useFirmwarePipeline() {
         addLog(`[Smart Contract] Broadcasting proposeRelease via signer ${truncateAddress(wallet.address || "")}...`, "info");
         const receipt = await wallet.proposeRelease(targetVersion, targetHash, targetUrl);
         addLog(`[Blockchain] Tx Mined: ${receipt.hash.slice(0, 20)}... in block #${receipt.blockNumber}`, "success");
+        addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", receipt.origin === "dev-node" ? "warning" : "success");
         addLog("[Multi-Sig] Signature 1 of 2 (2-of-3 multisig) anchored on-chain! Awaiting second dev approval.", "success");
       } else {
         // Fallback simulation if no active live node
@@ -298,6 +305,7 @@ export function useFirmwarePipeline() {
         addLog(`[Smart Contract] Calling revokeRelease("${version}") on ${wallet.contractAddress}...`, "info");
         const receipt = await wallet.revokeRelease(version);
         addLog(`[Blockchain] Release revoked in block #${receipt.blockNumber} (tx: ${receipt.hash.slice(0, 16)}...)`, "error");
+        addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", "warning");
       } else {
         await delay(800);
         addLog(`[Smart Contract] Firmware ${version} revoked immutably on-chain.`, "error");
@@ -330,6 +338,7 @@ export function useFirmwarePipeline() {
         addLog(`[Smart Contract] Calling approveRelease("${version}") from ${truncateAddress(wallet.address || "")}...`, "info");
         const receipt = await wallet.approveRelease(version);
         addLog(`[Blockchain] Threshold approval confirmed in block #${receipt.blockNumber}!`, "success");
+        addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", receipt.origin === "dev-node" ? "warning" : "success");
       } else {
         await delay(900);
       }

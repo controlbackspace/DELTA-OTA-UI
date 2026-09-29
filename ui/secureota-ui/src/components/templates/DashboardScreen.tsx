@@ -42,7 +42,10 @@ export const DashboardScreen: React.FC = () => {
           <StatusPill color="emerald" label="Gateway Online" dot />
           <StatusPill color="cyan" label="Chain: 31337 (Local)" dot />
 
-          {/* Connected Wallet Badge / QR Modal Trigger */}
+          {/* Connected Wallet Badge / QR Modal Trigger.
+              Opens the overlay (status + dev-signer + config tabs). Real
+              pairing starts from step 4 or the overlay QR tab's retry button;
+              the overlay can no longer display a session it doesn't have. */}
           <button
             type="button"
             onClick={() => pipeline.wallet.openCustomQrModal()}
@@ -186,6 +189,7 @@ export const DashboardScreen: React.FC = () => {
         onConnectInjected={pipeline.wallet.connectInjected}
         contractAddress={pipeline.wallet.contractAddress}
         onUpdateContractAddress={pipeline.wallet.updateContractAddress}
+        onOpenWalletConnect={() => void pipeline.wallet.openWalletModal()}
         statusMessage={pipeline.wallet.statusMessage}
       />
     </div>
