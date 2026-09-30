@@ -37,6 +37,8 @@ export interface WalletQrModalProps {
   onUpdateContractAddress: (addr: string) => void;
   rpcUrl: string;
   onUpdateRpcUrl: (url: string) => void;
+  phoneRpcUrl: string;
+  onUpdatePhoneRpcUrl: (url: string) => void;
   statusMessage?: string | null;
 }
 
@@ -55,6 +57,8 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   onUpdateContractAddress,
   rpcUrl,
   onUpdateRpcUrl,
+  phoneRpcUrl,
+  onUpdatePhoneRpcUrl,
   statusMessage,
 }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
@@ -65,6 +69,8 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   const [addressError, setAddressError] = useState<string | null>(null);
   const [draftRpcUrl, setDraftRpcUrl] = useState<string>(rpcUrl);
   const [rpcError, setRpcError] = useState<string | null>(null);
+  const [draftPhoneRpcUrl, setDraftPhoneRpcUrl] = useState<string>(phoneRpcUrl);
+  const [phoneRpcError, setPhoneRpcError] = useState<string | null>(null);
   const [verifyLoading, setVerifyLoading] = useState<boolean>(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
 
@@ -102,8 +108,10 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
       setAddressError(null);
       setDraftRpcUrl(rpcUrl);
       setRpcError(null);
+      setDraftPhoneRpcUrl(phoneRpcUrl);
+      setPhoneRpcError(null);
     }
-  }, [isOpen, contractAddress, rpcUrl]);
+  }, [isOpen, contractAddress, rpcUrl, phoneRpcUrl]);
 
   const handleSaveAddress = () => {
     const clean = draftAddress.trim();
@@ -150,6 +158,18 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
     }
     setRpcError(null);
     onUpdateRpcUrl(clean);
+  };
+
+  const handleSavePhoneRpcUrl = () => {
+    const clean = draftPhoneRpcUrl.trim().replace(/\/+$/, "");
+    if (!/^https:\/\/[^/\s]+$/.test(clean)) {
+      setPhoneRpcError(
+        `Invalid phone RPC — MetaMask Mobile needs https://host (the tunnel URL). Got "${draftPhoneRpcUrl}". Nothing saved.`
+      );
+      return;
+    }
+    setPhoneRpcError(null);
+    onUpdatePhoneRpcUrl(clean);
   };
 
   if (!isOpen) return null;
@@ -311,7 +331,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
               <div className="w-full flex items-start gap-2.5 p-3 rounded-lg bg-cyan-950/30 border border-cyan-800/40 text-left text-xs font-sans text-cyan-200">
                 <Info className="w-4 h-4 shrink-0 mt-0.5 text-cyan-400" />
                 <div>
-                  Scan with <strong>MetaMask Mobile</strong> or your WalletConnect-compatible wallet. Ensure your mobile wallet RPC is configured to your machine's local IP (e.g. <code className="text-cyan-300">http://192.168.x.x:8545</code>).
+                  Scan with <strong>MetaMask Mobile</strong> or your WalletConnect-compatible wallet. The phone reaches the node only through the HTTPS tunnel ({phoneRpcUrl ? <code className="text-cyan-300">{phoneRpcUrl}</code> : <span className="text-amber-300">not set — Contract Config → Phone RPC</span>}); a LAN <code className="text-cyan-300">http://</code> address is rejected by MetaMask Mobile.
                 </div>
               </div>
 
@@ -484,12 +504,44 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                 </p>
               </div>
 
+              <div className="space-y-1.5">
+                <label className="text-slate-300 font-medium">Phone RPC (HTTPS tunnel)</label>
+                <input
+                  type="text"
+                  value={draftPhoneRpcUrl}
+                  onChange={(e) => setDraftPhoneRpcUrl(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-[#1a2a3a] bg-[#05080f] font-mono text-xs text-cyan-300 focus:outline-none focus:border-cyan-500"
+                  placeholder="https://<random>.trycloudflare.com"
+                />
+                {phoneRpcError && (
+                  <p className="text-[11px] text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50">
+                    {phoneRpcError}
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSavePhoneRpcUrl}
+                    className="px-4 py-2 rounded-lg border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/40 text-cyan-300 transition-all"
+                  >
+                    Save phone RPC
+                  </button>
+                  <span className="text-[11px] text-slate-500">
+                    Current: <code className="text-cyan-300">{phoneRpcUrl || "not set"}</code>
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Given to MetaMask Mobile when it lacks chain 31337. <code className="text-slate-400">demo-up.bat</code> fills this automatically; the hostname changes every run.
+                </p>
+              </div>
+
               <div className="p-3 rounded-lg bg-[#05080f] border border-[#1a2a3a] space-y-2 text-[11px]">
                 <div className="text-slate-300 font-medium font-sans">Network Configuration:</div>
                 <div className="grid grid-cols-2 gap-2 font-mono text-slate-400">
                   <div>Network: Hardhat Localhost</div>
                   <div>Chain ID: 31337</div>
                   <div className="col-span-2">RPC URL: {rpcUrl}</div>
+                  <div className="col-span-2">Phone RPC: {phoneRpcUrl || "not set"}</div>
                   <div>Currency: ETH</div>
                 </div>
               </div>

@@ -20,6 +20,9 @@ export interface DesktopBridge {
   generatePatch(basePath: string, targetPath: string, versionTag: string): Promise<ReleaseResult>;
   pickBinary(): Promise<string | null>;
   getPathForFile(file: File): string;
+  /** HTTPS tunnel RPC exported by demo-up.bat (null when unset). Optional:
+   *  an older desktop build without this channel simply lacks it. */
+  getPhoneRpcUrl?(): Promise<string | null>;
 }
 
 declare global {

@@ -6,6 +6,7 @@ import type { GeneratePatchRequest, ReleaseResult } from "./contracts/release";
 const IPC_CHANNELS = {
   generatePatch: "patch:generate",
   pickBinary: "dialog:pick-bin",
+  phoneRpcUrl: "config:phone-rpc",
 } as const;
 
 /** The only surface exposed to the renderer — narrow, explicit, no Node access. */
@@ -16,6 +17,7 @@ const desktopApi = {
   },
   pickBinary: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.pickBinary),
   getPathForFile: (file: File): string => webUtils.getPathForFile(file),
+  getPhoneRpcUrl: (): Promise<string | null> => ipcRenderer.invoke(IPC_CHANNELS.phoneRpcUrl),
 };
 
 contextBridge.exposeInMainWorld("desktopAPI", desktopApi);

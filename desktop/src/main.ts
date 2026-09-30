@@ -45,6 +45,13 @@ function registerIpcHandlers(runner: PythonRunner): void {
     });
     return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0];
   });
+
+  // Phone-reachable RPC (the HTTPS tunnel URL demo-up.bat exports). MetaMask
+  // Mobile only accepts HTTPS, so anything else is treated as unset.
+  ipcMain.handle(IPC_CHANNELS.phoneRpcUrl, async () => {
+    const url = (process.env.DELTA_PHONE_RPC_URL ?? "").trim().replace(/\/+$/, "");
+    return /^https:\/\/[^/\s]+$/.test(url) ? url : null;
+  });
 }
 
 app.whenReady().then(() => {

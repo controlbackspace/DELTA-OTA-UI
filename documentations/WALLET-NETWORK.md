@@ -71,6 +71,15 @@ result — everything downstream assumes this line.
 | `onlyAuthorized` revert on a dev account           | Wrong account selected in MetaMask → switch to Dev1/2/3  |
 | `Switch MetaMask to Hardhat Localhost` in terminal | Phone wallet sits on another chain → switch networks     |
 | No QR rendered, amber "No session" panel           | Correct behavior when unpaired — use Retry (never a fake code) |
+| "no phone RPC is set" after pairing                | Phone lacks chain 31337 and the app has no tunnel URL → Contract Config → Phone RPC, re-scan |
+| Pairs, but every tx fails / balance never loads    | Phone's 31337 entry still holds an old tunnel URL — the app never overwrites an existing entry → redo step 2 |
+| "Restored phone session did not answer" on launch  | Phone app closed/asleep during the 15s relay ping → open MetaMask, re-scan |
+
+Pairing note: the session proposal also offers Sepolia as an anchor, so
+MetaMask always has a chain it can approve; the app then steers the phone to
+31337 (adding it with the Phone RPC when missing). Signing is refused on any
+chain other than 31337. `demo-up.bat` pre-fills the Phone RPC with the
+current tunnel URL; on a manual bring-up, paste it in Contract Config.
 
 ## 6. Cleanup
 

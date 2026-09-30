@@ -210,6 +210,8 @@ export const DashboardScreen: React.FC = () => {
         onUpdateContractAddress={pipeline.wallet.updateContractAddress}
         rpcUrl={pipeline.wallet.rpcUrl}
         onUpdateRpcUrl={pipeline.wallet.updateRpcUrl}
+        phoneRpcUrl={pipeline.wallet.phoneRpcUrl}
+        onUpdatePhoneRpcUrl={pipeline.wallet.updatePhoneRpcUrl}
         onOpenWalletConnect={() => void pipeline.wallet.openWalletModal()}
         statusMessage={pipeline.wallet.statusMessage}
       />

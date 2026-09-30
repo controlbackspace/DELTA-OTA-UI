@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { ethers } from "ethers";
 import { createAppKit } from "@reown/appkit/react";
+import { defineChain, sepolia } from "@reown/appkit/networks";
 import { EthersAdapter } from "@reown/appkit-adapter-ethers";
 import {
   DELTA_OTA_ABI,
@@ -12,6 +13,7 @@ import {
   formatGoldenHashBytes32,
   truncateAddress,
 } from "../../lib/web3Payloads";
+import { getDesktopBridge } from "../../lib/desktop";
 
 // WalletConnect Project ID for Reown AppKit (public client identifier —
 // shipped in the bundle by design, not a secret). Env override wins when set.
@@ -22,20 +24,45 @@ export const REOWN_PROJECT_ID =
 // Hardhat Localhost chain id (single source of truth for guards below)
 export const HARDHAT_CHAIN_ID = 31337;
 
-// Define network definition for AppKit
-export const localhostNetwork = {
+// Define network definition for AppKit (CAIP-identified custom chain —
+// chainNamespace + caipNetworkId are required: without them the WC session
+// proposal carries an unresolvable chain and phone wallets spin forever).
+export const localhostNetwork = defineChain({
   id: 31337,
+  chainNamespace: "eip155",
+  caipNetworkId: "eip155:31337",
   name: "Hardhat Localhost",
-  network: "localhost",
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
   rpcUrls: {
     default: { http: ["http://127.0.0.1:8545"] },
   },
   testnet: true,
-};
+});
 
 // Singleton AppKit instance
 let appKitInstance: ReturnType<typeof createAppKit> | null = null;
+
+// Guards ensurePhoneChain: one steering attempt per connected address (the
+// wallet answers with prompts, not events — retrying per state tick would
+// spam the phone). Reset on disconnect so a fresh session steers again.
+let lastChainEnsureAddr: string | null = null;
+
+// Single AppKit state subscription — openWalletModal runs on every retry
+// click, so the previous listener is dropped before re-subscribing.
+let modalStateUnsub: (() => void) | null = null;
+
+// WalletConnect internals the guards below need. getWalletProvider() returns
+// the UniversalProvider for QR sessions, which answers eth_chainId and
+// eth_accounts LOCALLY — only client.ping and wallet requests reach the phone.
+interface WcProviderInternals {
+  client?: { ping(params: { topic: string }): Promise<void> };
+  session?: { topic: string; namespaces?: Record<string, { accounts?: string[] }> };
+}
+const asWcInternals = (wp: unknown): WcProviderInternals | null =>
+  wp && typeof wp === "object" && "client" in wp ? (wp as WcProviderInternals) : null;
+
+/** MetaMask Mobile requires an HTTPS RPC for custom networks. */
+const isPhoneRpcUrl = (url: string): boolean => /^https:\/\/[^/\s]+$/.test(url);
 
 export function getAppKit() {
   if (typeof window === "undefined") return null;
@@ -44,7 +71,12 @@ export function getAppKit() {
       const ethersAdapter = new EthersAdapter();
       appKitInstance = createAppKit({
         adapters: [ethersAdapter],
-        networks: [localhostNetwork],
+        // Sepolia is a pairing anchor only: a proposal offering just a custom
+        // chain leaves MetaMask Mobile nothing it can approve unless 31337 is
+        // already configured on the phone, and the scan spins forever. With a
+        // well-known chain present the session always lands; ensurePhoneChain
+        // then steers the phone to 31337, and getSigner refuses any other chain.
+        networks: [localhostNetwork, sepolia],
         defaultNetwork: localhostNetwork,
         metadata: {
           name: "SecureOTA Console",
@@ -160,6 +192,57 @@ export function useDesktopWallet() {
     setStatusMessage(`RPC endpoint set: ${clean}`);
   }, []);
 
+  // Phone-reachable RPC (the HTTPS tunnel). Separate from rpcUrl: the desktop
+  // reads its own node over localhost, but the phone cannot — 127.0.0.1 on a
+  // phone is the phone itself, and MetaMask Mobile rejects plain http.
+  const [phoneRpcUrl, setPhoneRpcUrl] = useState<string>(() => {
+    try {
+      const stored = (localStorage.getItem("SECUREOTA_PHONE_RPC_URL") ?? "").trim();
+      if (isPhoneRpcUrl(stored)) return stored;
+    } catch {
+      // ignore — unset below
+    }
+    return "";
+  });
+
+  const updatePhoneRpcUrl = useCallback((url: string) => {
+    const clean = (url || "").trim().replace(/\/+$/, "");
+    if (!isPhoneRpcUrl(clean)) {
+      setStatusMessage(
+        `Invalid phone RPC rejected: "${url}" — MetaMask Mobile needs an https:// URL (the cloudflared tunnel); keeping current value.`
+      );
+      return;
+    }
+    setPhoneRpcUrl(clean);
+    try {
+      localStorage.setItem("SECUREOTA_PHONE_RPC_URL", clean);
+    } catch {
+      // non-fatal
+    }
+    setStatusMessage(`Phone RPC set: ${clean}`);
+  }, []);
+
+  // demo-up.bat exports the fresh tunnel URL on every run; it wins over a
+  // stored one because quick-tunnel hostnames rotate per run.
+  useEffect(() => {
+    const bridge = getDesktopBridge();
+    if (!bridge?.getPhoneRpcUrl) return;
+    void bridge
+      .getPhoneRpcUrl()
+      .then((url) => {
+        if (!url || !isPhoneRpcUrl(url)) return;
+        setPhoneRpcUrl(url);
+        try {
+          localStorage.setItem("SECUREOTA_PHONE_RPC_URL", url);
+        } catch {
+          // non-fatal
+        }
+      })
+      .catch(() => {
+        // older desktop build without the channel — manual entry still works
+      });
+  }, []);
+
   // Check if connected account is one of the Hardhat authorized developers
   const isAuthorized = address
     ? HARDHAT_AUTHORIZED_DEVS.some(
@@ -231,10 +314,36 @@ export function useDesktopWallet() {
     try {
       const modal = getAppKit();
       if (modal) {
+        let before: string | null = null;
+        try {
+          before =
+            (modal.getAccount() as unknown as { address?: string } | undefined)?.address ??
+            null;
+        } catch {
+          before = null;
+        }
         await modal.open();
+        // Stall watchdog: approval happens on the phone; if nothing connects
+        // within 90s, say exactly what to check instead of spinning forever.
+        window.setTimeout(() => {
+          let now: string | null = null;
+          try {
+            now =
+              (modal.getAccount() as unknown as { address?: string } | undefined)
+                ?.address ?? null;
+          } catch {
+            now = null;
+          }
+          if (!now || now === before) {
+            setStatusMessage(
+              "Still waiting for phone approval (90s) — check MetaMask for the connect prompt and that the phone has internet (WalletConnect relay), then re-scan. Dev signers need no phone at all."
+            );
+          }
+        }, 90000);
         // Subscribe to state — AppKit may report CAIP strings, so normalize;
         // garbage never becomes chain state (see parseChainId).
-        modal.subscribeState((state: { selectedNetworkId?: string | number }) => {
+        modalStateUnsub?.();
+        modalStateUnsub = modal.subscribeState((state: { selectedNetworkId?: string | number }) => {
           const parsed = parseChainId(state.selectedNetworkId);
           if (parsed !== null) setChainId(parsed);
         });
@@ -295,6 +404,7 @@ export function useDesktopWallet() {
     setChainId(null);
     setIsConnected(false);
     setVerifiedAddress(null);
+    lastChainEnsureAddr = null;
     setStatusMessage("Wallet disconnected");
     const modal = getAppKit();
     if (modal) {
@@ -307,6 +417,80 @@ export function useDesktopWallet() {
   }, []);
 
   const [signerOrigin, setSignerOrigin] = useState<SignerOrigin | null>(null);
+
+  // Phone wallets (MetaMask Mobile) cannot reach our node until chain 31337
+  // exists IN the phone with a reachable RPC. After an AppKit session
+  // connects, steer the phone onto the right chain: if the session already
+  // approved 31337 the provider switches locally (the phone has the network);
+  // otherwise the switch goes to the phone, and when the wallet reports the
+  // chain unknown (EIP-4902) it is added with the phone RPC (HTTPS tunnel —
+  // never the desktop's localhost RPC, which on a phone points at itself).
+  const ensurePhoneChain = useCallback(async () => {
+    if (!address || lastChainEnsureAddr === address) return;
+    let wp: ethers.Eip1193Provider | null = null;
+    try {
+      wp =
+        (getAppKit()?.getWalletProvider() as unknown as
+          | ethers.Eip1193Provider
+          | undefined) ?? null;
+    } catch {
+      return;
+    }
+    if (!wp) return;
+    lastChainEnsureAddr = address;
+    const hexChainId = `0x${HARDHAT_CHAIN_ID.toString(16)}`;
+    const approvedAccounts = asWcInternals(wp)?.session?.namespaces?.eip155?.accounts ?? [];
+    const alreadyApproved = approvedAccounts.some((a) =>
+      a.startsWith(`eip155:${HARDHAT_CHAIN_ID}:`)
+    );
+    try {
+      await wp.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hexChainId }] });
+      setStatusMessage(
+        alreadyApproved
+          ? "Phone session approved chain 31337 — signing requests target Hardhat Localhost."
+          : "Phone wallet switched to Hardhat Localhost (chain 31337)."
+      );
+    } catch (switchErr: unknown) {
+      const code = (switchErr as { code?: number })?.code;
+      const msg = switchErr instanceof Error ? switchErr.message : "";
+      const unknownChain =
+        code === 4902 || /unknown|unrecognized|not (added|found|available)/i.test(msg);
+      if (!unknownChain) {
+        setStatusMessage(
+          `Phone connected but chain switch was refused (${msg || "no reason given"}) — switch to chain 31337 manually.`
+        );
+        return;
+      }
+      if (!phoneRpcUrl) {
+        setStatusMessage(
+          "Phone has no chain 31337 and no phone RPC is set — enter the https://…trycloudflare.com tunnel URL under Contract Config → Phone RPC, then disconnect and re-scan."
+        );
+        lastChainEnsureAddr = null;
+        return;
+      }
+      try {
+        await wp.request({
+          method: "wallet_addEthereumChain",
+          params: [
+            {
+              chainId: hexChainId,
+              chainName: "Hardhat Localhost",
+              nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+              rpcUrls: [phoneRpcUrl],
+            },
+          ],
+        });
+        setStatusMessage(
+          `Added Hardhat Localhost (31337) to the phone with RPC ${phoneRpcUrl} — approve the switch prompt in MetaMask.`
+        );
+      } catch (addErr: unknown) {
+        const addMsg = addErr instanceof Error ? addErr.message : "chain add refused";
+        setStatusMessage(
+          `Phone connected but chain 31337 could not be added (${addMsg}). Add it manually in MetaMask: chain 31337, RPC ${phoneRpcUrl}.`
+        );
+      }
+    }
+  }, [address, phoneRpcUrl]);
 
   // Chain-verified authorization (real-life): the local HARDHAT_AUTHORIZED_DEVS
   // list is a display hint only — the contract's authorizedDevelopers mapping
@@ -351,9 +535,6 @@ export function useDesktopWallet() {
 
   // Keep UI identity in sync with the real AppKit session (QR-paired phone
   // included). Fires on connect, account switch, and disconnect/expiry.
-  // Plus boot-time validation: a restored session that cannot answer RPC
-  // within 5s is forgotten (covers app-close and dead-node cases — close
-  // always reads as disconnected on next open).
   useEffect(() => {
     const modal = getAppKit();
     if (!modal) return;
@@ -363,8 +544,12 @@ export function useDesktopWallet() {
       setIsConnected(s.isConnected === true && addr !== null);
       if (addr) {
         setStatusMessage(`Connected: ${truncateAddress(addr)}`);
-        // Authoritative chain: ask the live provider, not AppKit gossip.
-        // A stale/wrong state event can never wedge the gates again.
+        // Steer the freshly paired phone onto chain 31337 (switch, or add
+        // with the configured RPC when unknown) — otherwise it stalls.
+        void ensurePhoneChain();
+        // Chain the signer will actually use: the provider's default chain
+        // (answered locally, no phone round-trip) — the same value getSigner
+        // checks, so the gates and the signer cannot disagree.
         void (async () => {
           try {
             const wp = modal?.getWalletProvider() as unknown as
@@ -383,6 +568,7 @@ export function useDesktopWallet() {
           }
         })();
       } else if (s.isConnected === false) {
+        lastChainEnsureAddr = null;
         setStatusMessage("Wallet disconnected (session ended — re-scan to reconnect)");
       }
     };
@@ -394,39 +580,44 @@ export function useDesktopWallet() {
     } catch {
       // ignore — subscription below covers live changes
     }
-    // Boot validation: restored WC sessions must prove liveness. A dead
-    // relay/phone/node answers nothing — forget it instead of trusting it.
+    const unsub = modal.subscribeAccount(sync);
+    return unsub;
+    // Re-subscribes when the steering callback refreshes (address/RPC
+    // change) so sync always steers with live values; seed sets are
+    // idempotent so this never loops.
+  }, [ensurePhoneChain]);
+
+  // Boot validation (once): a restored WC session must prove liveness. The
+  // provider answers eth_chainId/eth_accounts locally, so only a relay ping
+  // reaches the phone — a session whose phone never answers is forgotten
+  // instead of trusted (re-scan to reconnect).
+  useEffect(() => {
+    const modal = getAppKit();
+    if (!modal) return;
     void (async () => {
       try {
         const cur = modal.getAccount() as unknown as
           { address?: string; isConnected?: boolean } | undefined;
         if (!cur?.isConnected || !cur?.address) return;
-        const wp = modal?.getWalletProvider() as unknown as
-          ethers.Eip1193Provider | undefined;
-        if (!wp) return; // dev/injected sessions validate through their own flows
-        const provider = new ethers.BrowserProvider(wp);
-        const net = await Promise.race([
-          provider.getNetwork(),
-          new Promise<never>((_, reject) =>
-            window.setTimeout(() => reject(new Error("stale session")), 5000)
-          ),
-        ]);
-        // A session that answers is also a chain source of truth.
-        setChainId(Number(net.chainId));
+        const wc = asWcInternals(modal.getWalletProvider());
+        // dev/injected sessions validate through their own flows
+        if (!wc?.client || !wc.session?.topic) return;
+        await raceTimeout(wc.client.ping({ topic: wc.session.topic }), 15000, "stale session");
       } catch {
         try {
           await modal.disconnect();
         } catch {
           // ignore — state reset below is the guarantee, relay drop is bonus
         }
+        lastChainEnsureAddr = null;
         setAddress(null);
         setChainId(null);
         setIsConnected(false);
-        setStatusMessage("Wallet disconnected (session ended — re-scan to reconnect)");
+        setStatusMessage(
+          "Restored phone session did not answer (15s ping) — forgotten. Open MetaMask on the phone and re-scan."
+        );
       }
     })();
-    const unsub = modal.subscribeAccount(sync);
-    return unsub;
   }, []);
 
   // Best-effort forget on close (pagehide covers desktop + mobile; browsers
@@ -727,6 +918,8 @@ export function useDesktopWallet() {
     verifyIdentity,
     updateContractAddress,
     updateRpcUrl,
+    phoneRpcUrl,
+    updatePhoneRpcUrl,
     connectInjected,
     openWalletModal,
     openCustomQrModal,
