@@ -57,3 +57,30 @@ exceptions are explicit bench/test seams, labeled as such in code.
   UI RPC-endpoint fix — open item, not yet built).
 - **Venue**: Pi-hosted hotspot (`192.168.50.1`, see `NETWORK.md`) + direct
   Ethernet laptop↔Pi (`10.10.10.x`); no venue infrastructure participates.
+
+## Key-distribution assumption (P0-6)
+
+The 2-of-3 governance model rests on an explicit assumption: **one human
+controls exactly one developer key.** The contract enforces that approvals
+come from *distinct authorized addresses* (`hasSigned`, proposer counted as
+signature 1). It cannot verify that two addresses belong to two different
+people. Key custody (hardware wallet, phone wallet, backup) is out of scope
+and left to standard wallet UX.
+
+Consequences, stated plainly:
+- The in-app proposer≠approver check prevents accidents and single-operator
+  role-play; it does **not** stop a person who genuinely holds two keys.
+  Nothing inside the application can (this is a Layer 1 / organizational
+  control).
+- Dev signers (node-signed Hardhat accounts) exist only in dev builds
+  (`import.meta.env.DEV`); production is external-wallets-only.
+- The thesis chapter must carry this same statement.
+
+## Dependency audit record (P1-2, 2026-09-30)
+
+- `ui/secureota-ui`: `npm audit fix` applied (nanoid) -> 0 vulnerabilities.
+- `desktop`: `npm audit fix` applied -> 0 vulnerabilities (production deps
+  were already clean; findings were in build tooling).
+- `blockchain`: 1 high (adm-zip, transitive via Hardhat tooling). Only fix
+  is `--force` (breaking Hardhat change). **Accepted**: dev-only tooling, never
+  shipped or run in production paths; revisit after defense.

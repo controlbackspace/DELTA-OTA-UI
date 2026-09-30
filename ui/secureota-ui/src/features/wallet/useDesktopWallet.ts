@@ -77,6 +77,16 @@ export interface ContractTransactionReceipt {
   origin: SignerOrigin;
 }
 
+/** Structured on-chain release state — P0-2 chain-as-truth record. */
+export interface OnChainReleaseRecord {
+  version: string;
+  goldenHash: string;
+  ipfsUrl: string;
+  approvalCount: number;
+  isLive: boolean;
+  isRevoked: boolean;
+}
+
 export function useDesktopWallet() {
   const [address, setAddress] = useState<string | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
@@ -85,7 +95,16 @@ export function useDesktopWallet() {
   const [connectionUri, setConnectionUri] = useState<string | null>(null);
   const [isQrModalOpen, setIsQrModalOpen] = useState<boolean>(false);
   const [contractAddress, setContractAddress] = useState<string>(() => {
-    return localStorage.getItem("SECUREOTA_CONTRACT_ADDRESS") || DEFAULT_CONTRACT_ADDRESS;
+    const stored = localStorage.getItem("SECUREOTA_CONTRACT_ADDRESS");
+    // P0-3: localStorage override path covered — garbage never becomes truth.
+    if (stored && stored.trim() && ethers.isAddress(stored.trim())) {
+      try {
+        return ethers.getAddress(stored.trim());
+      } catch {
+        // Fall through to default below.
+      }
+    }
+    return DEFAULT_CONTRACT_ADDRESS;
   });
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
 
@@ -96,11 +115,25 @@ export function useDesktopWallet() {
       )
     : false;
 
-  // Save contract address changes to localStorage
+  // Save contract address changes to localStorage — P0-3 strict validation:
+  // malformed/empty input is loudly rejected and never persisted.
   const updateContractAddress = useCallback((addr: string) => {
-    setContractAddress(addr);
-    localStorage.setItem("SECUREOTA_CONTRACT_ADDRESS", addr);
-  }, []);
+    const clean = (addr || "").trim();
+    if (!clean || !ethers.isAddress(clean)) {
+      setStatusMessage(
+        `Invalid contract address rejected: "${addr}" — expected 0x + 40 hex chars; keeping ${contractAddress}.`
+      );
+      return;
+    }
+    try {
+      const checksummed = ethers.getAddress(clean);
+      setContractAddress(checksummed);
+      localStorage.setItem("SECUREOTA_CONTRACT_ADDRESS", checksummed);
+      setStatusMessage(`Contract address set: ${checksummed}`);
+    } catch {
+      setStatusMessage(`Invalid contract address rejected: "${addr}" — checksum failed.`);
+    }
+  }, [contractAddress]);
 
   // Check for injected Ethereum provider (MetaMask in browser)
   const getInjectedProvider = useCallback(async () => {
@@ -179,7 +212,15 @@ export function useDesktopWallet() {
   }, []);
 
   // Connect with a specific Hardhat test private key or account address directly (for rapid testing)
+  // P0-4: dev-only — no-op with a loud status in production builds.
   const connectDevAccount = useCallback(async (devIndex = 0) => {
+    const isDevBuild =
+      (import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env
+        ?.DEV === true;
+    if (!isDevBuild) {
+      setStatusMessage("Dev signers are disabled in production — connect an external wallet.");
+      throw new Error("Dev signers are disabled in production builds.");
+    }
     const devAddr = HARDHAT_AUTHORIZED_DEVS[devIndex] || HARDHAT_AUTHORIZED_DEVS[0];
     setAddress(devAddr);
     setChainId(31337);
@@ -282,7 +323,18 @@ export function useDesktopWallet() {
       setSignerOrigin("injected");
       return { signer: await injected.getSigner(), origin: "injected" as const };
     }
-    // In desktop or headless mode without any wallet, sign with the local
+    // P0-4: dev-node fallback exists ONLY in dev builds. Production
+    // (packaged app is always a prod build) is external-wallets-only —
+    // no silent node signing, callers get a loud error instead.
+    const isDevBuild =
+      (import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env
+        ?.DEV === true;
+    if (!isDevBuild) {
+      throw new Error(
+        "No wallet session — connect via Reown QR or a MetaMask extension on Hardhat Localhost (dev-node fallback is disabled in production)."
+      );
+    }
+    // In dev/desktop headless mode without any wallet, sign with the local
     // Hardhat node's unlocked accounts (http://127.0.0.1:8545). No phone
     // prompt happens on this path — callers must label it honestly.
     const jsonRpcProvider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
@@ -375,15 +427,38 @@ export function useDesktopWallet() {
   );
 
   /**
-   * Query contract state for a version
+   * Query contract state for a version — chain-as-truth read path (P0-2).
+   * Returns a structured record (never raw ethers tuple) or null when the
+   * node is unreachable. Callers merge this into the local ledger cache.
    */
   const fetchRelease = useCallback(
-    async (version: string) => {
+    async (version: string): Promise<OnChainReleaseRecord | null> => {
       try {
         const jsonRpcProvider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
         const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, jsonRpcProvider);
         const versionBytes32 = formatVersionBytes32(version);
-        return await contract.getRelease(versionBytes32);
+        const raw = await contract.getRelease(versionBytes32);
+        // Ethers v6 returns array-like + named props; handle both shapes.
+        const goldenHash: string =
+          (raw?.goldenHash as string | undefined) ?? (raw?.[1] as string | undefined) ?? "";
+        const ipfsUrl: string =
+          (raw?.ipfsUrl as string | undefined) ?? (raw?.[2] as string | undefined) ?? "";
+        const approvalRaw = (raw?.approvalCount as unknown) ?? raw?.[3] ?? 0;
+        const approvalCount =
+          typeof approvalRaw === "bigint" ? Number(approvalRaw) : Number(approvalRaw as number);
+        const isLive: boolean =
+          (raw?.isLive as boolean | undefined) ?? (raw?.[4] as boolean | undefined) ?? false;
+        const isRevoked: boolean =
+          (raw?.isRevoked as boolean | undefined) ?? (raw?.[5] as boolean | undefined) ?? false;
+        return {
+          version,
+          goldenHash:
+            goldenHash === ethers.ZeroHash ? "" : goldenHash,
+          ipfsUrl,
+          approvalCount: Number.isFinite(approvalCount) ? approvalCount : 0,
+          isLive,
+          isRevoked,
+        };
       } catch (err) {
         console.warn("Could not query contract release:", err);
         return null;
