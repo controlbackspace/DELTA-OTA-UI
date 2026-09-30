@@ -7,9 +7,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from coap_server import start_coap_server
+from coap_server import get_lan_ip, start_coap_server
 from blockchain_poller import BlockchainPoller
 from security_engine import SecurityEngine
+from simulation.simulated_ledger import DemoBlockchainPoller
 
 ARTIFACT_DIR = Path(__file__).resolve().parent.parent.parent / "artifacts"
 DUMMY_PATCH = ARTIFACT_DIR / "dummy_patch.bin"
@@ -25,6 +26,15 @@ BLOCKS_DIR = ARTIFACT_DIR / "blocks"  # per-chunk frames for the ESP32 /patch pr
 # bytes into memory, no matter what URL a release names).
 MAX_DOWNLOAD_BYTES = 8 * 1024 * 1024
 DOWNLOAD_TIMEOUT_S = 30
+
+# Simulated-ledger mode: SIM_LEDGER=1 polls DemoBlockchainPoller instead of
+# web3 (bench/rehearsal seam — full OTA loop with zero blockchain processes).
+# Payload bytes resolve to SIM_PAYLOAD_URL so the REAL download→hash→stage
+# path still executes end to end; only the release dict is simulated.
+# LEDGER_IS_LIVE / LEDGER_IS_REVOKED / LEDGER_GOLDEN_HASH knobs from the
+# simulation package drive scenarios without any chain.
+SIM_LEDGER = os.environ.get("SIM_LEDGER", "") == "1"
+SIM_PAYLOAD_URL = DUMMY_PATCH.as_uri()
 
 
 def _safe_tag(version_tag: str) -> str:
@@ -73,13 +83,31 @@ def _clear_staged():
 
 async def main_loop():
 
-    # The Web3 HTTP connection is established exactly once at boot
-    poller = BlockchainPoller()
+    # Ledger source: real web3 poller, or the simulated ledger when
+    # SIM_LEDGER=1 (bench/rehearsal — no node required).
+    if SIM_LEDGER:
+        print("[Ledger] SIM_LEDGER=1: polling simulated ledger (no blockchain).")
+        poller = DemoBlockchainPoller()
+    else:
+        # The Web3 HTTP connection is established exactly once at boot
+        poller = BlockchainPoller()
 
     # The security engine handles payload verification and encryption
     engine = SecurityEngine()
 
     await start_coap_server()
+
+    # Bind self-check: a loopback bind means no default route, and the CoAP
+    # server would be reachable from nothing (not even the ESP32). Say so
+    # loudly instead of serving into the void; otherwise print usable URLs.
+    bind_addr = os.getenv("DELTA_BIND_ADDR", get_lan_ip())
+    if bind_addr.startswith("127."):
+        print(f"[CoAP] WARNING: bound to loopback {bind_addr} - no default route. "
+              f"ESP32 devices cannot reach this gateway; fix networking or set "
+              f"DELTA_BIND_ADDR.")
+    else:
+        print(f"[CoAP] Reachable at coap://{bind_addr}:5683/firmware and "
+              f"coap://{bind_addr}:5683/patch")
 
     # 1. State Initialization (The Gateway Boot Sequence)
     state_file = STATE_FILE
@@ -97,11 +125,16 @@ async def main_loop():
     while True:
         release_data = await poller.fetch_firmware_release(TARGET_VERSION)
 
-        # Zero Trust: if the ledger poll failed (node offline, RPC error),
-        # halt the gateway immediately instead of crashing.
+        # Ledger unreachable (node offline, RPC error): this is WAITING, not
+        # failure. Warn, sleep, and keep polling indefinitely - the gateway
+        # must outlive transient outages with or without a process supervisor.
+        # (Revocation below is the only terminal halt: a ledger verdict, not
+        # an absence.)
         if release_data is None:
-            print("[Gateway] FATAL: Ledger poll failed (Hardhat offline?). Halting gateway.")
-            return
+            print("[Gateway] Ledger unreachable (node offline?). Waiting - "
+                  "will retry next poll.")
+            await asyncio.sleep(POLL_INTERVAL)
+            continue
 
         # Zero Trust: never apply or serve a release that was revoked on-chain
         if release_data["isRevoked"] is True:
@@ -125,8 +158,14 @@ async def main_loop():
                       f"(bench/test only - production downloads the release URL).")
                 payload_path = Path(payload_override)
             else:
-                payload_bytes = await asyncio.to_thread(
-                    _download_patch, release_data.get("ipfsUrl", ""))
+                # Download source: the on-chain URL in production; the local
+                # fixture URI in SIM_LEDGER mode (the sim ledger's canned URL
+                # is not fetchable by design, so resolve it here and keep the
+                # download path below executing for real).
+                source_url = SIM_PAYLOAD_URL if SIM_LEDGER else release_data.get("ipfsUrl", "")
+                if SIM_LEDGER:
+                    print(f"[Network] SIM_LEDGER payload resolves to {source_url}.")
+                payload_bytes = await asyncio.to_thread(_download_patch, source_url)
                 if payload_bytes is None:
                     await asyncio.sleep(POLL_INTERVAL)
                     continue

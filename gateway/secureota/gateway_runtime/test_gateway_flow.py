@@ -93,7 +93,7 @@ async def run_offline_check():
     result = await poller.fetch_firmware_release("v1.1")
 
     if result is None:
-        print("[Test] PASS: poller returned None (main_gateway will halt safely).")
+        print("[Test] PASS: poller returned None (main_gateway keeps polling until the ledger answers).")
     elif result["isLive"] is False:
         print("[Test] NOTE: node answered but release is not live (main_gateway will just sleep).")
     else:

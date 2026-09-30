@@ -1,0 +1,28 @@
+Failure Warning!
+[CoAP] Server active. Listening on 192.168.100.94:5683...
+[CoAP] Reachable at coap://192.168.100.94:5683/firmware and coap://192.168.100.94:5683/patch
+[Boot] Gateway loaded. Current version: v1.1
+
+[Network] Polling ledger for firmware version: v1.1...
+[Error] Gateway is not connected to the blockchain. Aborting poll.
+[Gateway] Ledger unreachable (node offline?). Waiting - will retry next poll.
+
+[Network] Polling ledger for firmware version: v1.1...
+[Error] Gateway is not connected to the blockchain. Aborting poll.
+[Gateway] Ledger unreachable (node offline?). Waiting - will retry next poll.
+
+[Network] Polling ledger for firmware version: v1.1...
+[Error] Gateway is not connected to the blockchain. Aborting poll.
+[Gateway] Ledger unreachable (node offline?). Waiting - will retry next poll.
+
+[Network] Polling ledger for firmware version: v1.1...
+[Error] Gateway is not connected to the blockchain. Aborting poll.
+[Gateway] Ledger unreachable (node offline?). Waiting - will retry next poll.
+
+[Network] Polling ledger for firmware version: v1.1...
+[Error] Gateway is not connected to the blockchain. Aborting poll.
+[Gateway] Ledger unreachable (node offline?). Waiting - will retry next poll.
+
+[Network] Polling ledger for firmware version: v1.1...
+[Error] Gateway is not connected to the blockchain. Aborting poll.
+[Gateway] Ledger unreachable (node offline?). Waiting - will retry next poll.

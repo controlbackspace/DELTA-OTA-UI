@@ -1,0 +1,29 @@
+[Ledger] SIM_LEDGER=1: polling simulated ledger (no blockchain).
+[CoAP] Server active. Listening on 192.168.100.94:5683...
+[CoAP] Reachable at coap://192.168.100.94:5683/firmware and coap://192.168.100.94:5683/patch
+[Boot] Gateway loaded. Current version: v1.0
+[Ledger Bypass] Simulating on-chain state for v1.1 (live=True, revoked=False)
+Success! New Update (v1.1) is Live.
+[Network] SIM_LEDGER payload resolves to file:///C:/Users/jajai/Desktop/DELTA-OTA-UI/gateway/artifacts/dummy_patch.bin.
+[Network] Downloaded 4 bytes from release URL.
+[Security] Expected Hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+[Security] Computed Hash: 9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08
+[Security] Verification Passed. Payload is authentic.
+Verified! Moving to encryption!
+[Encryption] Wrapping payload in OSCORE AES-CCM layer...
+[Encryption] Payload secured and saved to C:\Users\jajai\Desktop\DELTA-OTA-UI\gateway\artifacts\encrypted_patch.bin.
+[Encryption] Slicing payload into block frames...
+[Encryption] Wrote 1 block frame(s) to C:\Users\jajai\Desktop\DELTA-OTA-UI\gateway\artifacts\blocks.
+[System] Gateway state updated to v1.1
+[Ledger Bypass] Simulating on-chain state for v1.1 (live=True, revoked=False)
+[Gateway] No new updates found. Sleeping...
+[Ledger Bypass] Simulating on-chain state for v1.1 (live=True, revoked=False)
+[Gateway] No new updates found. Sleeping...
+[Ledger Bypass] Simulating on-chain state for v1.1 (live=True, revoked=False)
+[Gateway] No new updates found. Sleeping...
+[Ledger Bypass] Simulating on-chain state for v1.1 (live=True, revoked=False)
+[Gateway] No new updates found. Sleeping...
+[Ledger Bypass] Simulating on-chain state for v1.1 (live=True, revoked=False)
+[Gateway] No new updates found. Sleeping...
+[Ledger Bypass] Simulating on-chain state for v1.1 (live=True, revoked=False)
+[Gateway] No new updates found. Sleeping...
