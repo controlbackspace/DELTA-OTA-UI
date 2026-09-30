@@ -317,7 +317,13 @@ export function useFirmwarePipeline() {
     setLoadingStep("approval");
 
     const targetVersion = targetFile ? deriveVersionTag(targetFile.name) : "v1.1";
-    const targetHash = goldenHash || "0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f";
+    const targetHash = goldenHash ?? "";
+    if (!targetHash) {
+      // P1-1: never anchor a placeholder hash on-chain.
+      addLog("[Smart Contract] No golden hash available — generate the delta first. Proposal refused.", "error");
+      setLoadingStep(null);
+      return;
+    }
     const targetUrl = patchUrl || (ipfsCid ? `ipfs://${ipfsCid}` : "");
     if (!targetUrl) {
       addLog("[Smart Contract] No payload URL available — generate the delta first.", "error");
@@ -343,11 +349,8 @@ export function useFirmwarePipeline() {
           setProposers((prev) => ({ ...prev, [targetVersion.toLowerCase()]: proposerAddr }));
         }
       } else {
-        // Fallback simulation if no active live node
-        addLog("[Smart Contract] Signer prompt dispatched. Broadcasting to DeltaOTA...", "info");
-        await delay(900);
-        addLog("[Multi-Sig] Signature 1 of 2 (2-of-3 multisig) anchored to ledger by Dev #1.", "success");
-        addLog("[Governance] Status: Awaiting threshold signature (2-of-3 required).", "warning");
+        // P1-1: no simulated write path — an unconnected wallet cannot propose.
+        throw new Error("Wallet not connected — connect an authorized developer wallet before proposing.");
       }
 
       setReleases((prev) => {
