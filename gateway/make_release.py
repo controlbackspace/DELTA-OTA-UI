@@ -4,7 +4,11 @@ import os
 import re
 import sys
 
-from secureota.release_builder.core import build_release
+from secureota.release_builder.core import (
+    ARTIFACT_HTTP_PORT,
+    build_release,
+    gateway_lan_ip,
+)
 
 TAG_RE = re.compile(r"[^A-Za-z0-9._-]")
 
@@ -61,6 +65,12 @@ def main():
     with open(output_path, "wb") as f:
         f.write(patch_bytes)
 
+    # 6b. Real download URL: serve_artifacts.py exposes artifacts/ on the
+    # LAN at ARTIFACT_HTTP_PORT, so this URL resolves off-box (curl-provable).
+    metadata.patch_url = (
+        f"http://{gateway_lan_ip()}:{ARTIFACT_HTTP_PORT}/{output_filename}"
+    )
+
     if args.json:
         # 7a. Machine-readable output: single JSON object on stdout
         print(json.dumps({
@@ -79,6 +89,7 @@ def main():
     print(f"Patch Size: {metadata.patch_size} bytes")
     print(f"Compression Ratio: {metadata.compression_ratio}")
     print(f"Patch saved to: {output_path}")
+    print(f"Download URL: {metadata.patch_url}  (serve via serve_artifacts.py)")
 
 if __name__ == "__main__":
     main()

@@ -2,6 +2,7 @@ import hre from "hardhat";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 /**
  * Day-1 baseline helper: propose v1.1 as Dev1 and approve as Dev2 so the
@@ -19,6 +20,8 @@ import path from "node:path";
  *   BAD_HASH=1        ...propose with a wrong golden hash (Day-2 mismatch setup)
  *   GOLDEN_HASH=<hex> ...propose with this hash instead of dummy_patch.bin's
  *                 (hardware runs: sha256 of the real firmware image)
+ *   IPFS_URL=<url>  ...anchor this payload URL instead of the file:// dummy
+ *                 (hosted runs: http(s) URL served by serve_artifacts.py)
  */
 async function main() {
   const contractAddr = process.env.DELTA_CONTRACT_ADDRESS;
@@ -56,9 +59,18 @@ async function main() {
     console.log("BAD_HASH=1: proposing with a wrong golden hash (mismatch setup).");
   }
 
+  // Default URL is file:// so the gateway exercises its real download path
+  // even offline; override with IPFS_URL=http(s)://... for hosted runs.
+  // (Bare ipfs:// needs a gateway in front - the gateway refuses it loudly.)
+  const payloadUrl = process.env.IPFS_URL ||
+    pathToFileURL(dummyPath).href;
+  if (process.env.IPFS_URL) {
+    console.log(`IPFS_URL override: proposing with payload URL ${payloadUrl}`);
+  }
+
   const tx1 = await contract
     .connect(dev1)
-    .proposeRelease(versionBytes32, goldenBytes32, "ipfs://demo/dummy_patch.bin");
+    .proposeRelease(versionBytes32, goldenBytes32, payloadUrl);
   await tx1.wait();
   console.log(`proposed v1.1 as ${dev1.address} (tx ${tx1.hash.slice(0, 18)}...)`);
 

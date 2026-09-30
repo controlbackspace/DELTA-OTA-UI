@@ -49,7 +49,8 @@ async def run_flow_test():
         json.dump({"installed_version": "v1.0"}, file)
 
     # The fake ledger returns the real golden hash of the dummy patch,
-    # so fetch_and_verify_payload must succeed.
+    # so fetch_and_verify_payload must succeed. The URL is file:// so the
+    # test exercises the gateway's real download path (no shared-disk seam).
     with open(DUMMY_PATCH, "rb") as file:
         golden_hash = hashlib.file_digest(file, "sha256").hexdigest()
 
@@ -59,7 +60,7 @@ async def run_flow_test():
             self._pending = {
                 "version": main_gateway.TARGET_VERSION,
                 "goldenHash": golden_hash,
-                "ipfsUrl": "ipfs://test-cid",
+                "ipfsUrl": DUMMY_PATCH.as_uri(),
                 "approvalCount": 2,
                 "isLive": True,
                 "isRevoked": False,

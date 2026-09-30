@@ -162,8 +162,8 @@ export function useFirmwarePipeline() {
         );
         addLog(`[SHA-256] Golden Hash computed: ${result.golden_hash}`, "hash");
         setGoldenHash(result.golden_hash);
-        setPatchUrl(result.patch_url);
-        setIpfsCid(result.ipfs_cid);
+        setPatchUrl(result.patch_url || null);
+        setIpfsCid(result.ipfs_cid || null);
         setDeltaSizeKb(+(result.patch_size / 1024).toFixed(1));
         setCompressionRatio(`${(result.compression_ratio * 100).toFixed(1)}% Reduction`);
         setReleases((prev) =>
@@ -204,10 +204,15 @@ export function useFirmwarePipeline() {
     setLoadingStep("url");
     addLog("[Hosting] Configuring IPFS gateway URL for delta payload...", "info");
 
-    if (getDesktopBridge() && ipfsCid) {
+    if (getDesktopBridge() && patchUrl) {
       await delay(600);
-      addLog(`[Hosting] ${ipfsCid} — Pinned & accessible.`, "success");
-      if (patchUrl) addLog(`[Hosting] Download: ${patchUrl}`, "info");
+      addLog(`[Hosting] Download: ${patchUrl}`, "success");
+      addLog("[Hosting] Serve gateway/artifacts/ on :8000 (serve_artifacts.py) so the URL resolves off-box.", "info");
+      if (ipfsCid) addLog(`[Hosting] Artifact ID: ${ipfsCid}`, "info");
+    } else if (getDesktopBridge()) {
+      addLog("[Hosting] No download URL from builder — regenerate the patch.", "error");
+      setLoadingStep(null);
+      return;
     } else {
       await delay(800);
       addLog("[Hosting] ipfs://QmXf7kp...2bCd — Pinned & accessible.", "success");
@@ -237,7 +242,12 @@ export function useFirmwarePipeline() {
 
     const targetVersion = targetFile ? deriveVersionTag(targetFile.name) : "v1.1";
     const targetHash = goldenHash || "0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f";
-    const targetUrl = patchUrl || (ipfsCid ? `ipfs://${ipfsCid}` : "ipfs://QmXf7kp8s9tUvWxYz1234567890aAbBcCdDeEfFgGhHiIj");
+    const targetUrl = patchUrl || (ipfsCid ? `ipfs://${ipfsCid}` : "");
+    if (!targetUrl) {
+      addLog("[Smart Contract] No payload URL available — generate the delta first.", "error");
+      setLoadingStep(null);
+      return;
+    }
 
     addLog(
       `[Payload Formatter] Formatting proposeRelease(version: "${targetVersion}", goldenHash: "${formatGoldenHashBytes32(targetHash).slice(0, 18)}...", ipfsUrl: "${targetUrl.slice(0, 30)}...")`,

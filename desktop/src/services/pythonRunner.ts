@@ -12,9 +12,6 @@ export class PythonExecutionError extends Error {
   }
 }
 
-const MOCK_IPFS_ORIGIN = "http://local-test-server";
-const STALE_HTTP_ORIGIN = "http://localhost:8000";
-
 /** Hard cap on a single release-builder run (spawn hangs are otherwise silent). */
 const RELEASE_BUILDER_TIMEOUT_MS = 120_000;
 
@@ -118,22 +115,19 @@ export class PythonRunner {
     return this.normalize(parsed as Partial<ReleaseResult>);
   }
 
-  /** Adapter: maps the CLI's local-server URL to the poller-consistent mock origin. */
+  /** Pass-through: the CLI emits the real LAN download URL. No URL is ever
+      synthesized here — an absent URL surfaces as "" so callers must cope. */
   private normalize(raw: Partial<ReleaseResult>): ReleaseResult {
     const versionTag = raw.version_tag ?? "v1.1";
     const goldenHash = raw.golden_hash ?? "";
-    const patchUrl =
-      (raw.patch_url ?? "").startsWith(STALE_HTTP_ORIGIN) || !raw.patch_url
-        ? `${MOCK_IPFS_ORIGIN}/patch_${versionTag}.bin`
-        : raw.patch_url;
 
     return {
       version_tag: versionTag,
       golden_hash: goldenHash,
       patch_size: raw.patch_size ?? 0,
       compression_ratio: raw.compression_ratio ?? 0,
-      patch_url: patchUrl,
-      ipfs_cid: raw.ipfs_cid || `Qm${goldenHash.slice(0, 8)}${versionTag.replace(/\./g, "")}`,
+      patch_url: raw.patch_url ?? "",
+      ipfs_cid: raw.ipfs_cid ?? "",
       patch_path: raw.patch_path ?? "",
     };
   }
