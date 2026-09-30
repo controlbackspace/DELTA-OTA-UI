@@ -17,12 +17,18 @@ export interface LedgerDeploymentsTableProps {
   releases: LedgerRelease[];
   onExecuteKillSwitch: (version: string) => void;
   onApproveUpdate: (version: string) => void;
+  /** Lowercased proposer per version (receipt.from at propose time). */
+  proposerByVersion?: Record<string, string>;
+  /** Currently connected wallet (any case) — used for the proposer guard. */
+  connectedAddress?: string | null;
 }
 
 export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
   releases,
   onExecuteKillSwitch,
   onApproveUpdate,
+  proposerByVersion = {},
+  connectedAddress = null,
 }) => {
   return (
     <div className="border-b border-[#1a2a3a] bg-[#060c18]">
@@ -85,16 +91,34 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
                 </td>
                 <td className="px-6 py-4 text-right">
                   <div className="flex items-center justify-end gap-2">
-                    {!release.isLive && !release.isRevoked && (
-                      <button
-                        type="button"
-                        onClick={() => onApproveUpdate(release.version)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-emerald-800/40 bg-emerald-950/20 text-emerald-400 hover:bg-emerald-950/40 transition-all text-[10px]"
-                      >
-                        <ShieldCheck className="w-3 h-3" />
-                        Approve
-                      </button>
-                    )}
+                    {(() => {
+                      if (release.isLive || release.isRevoked) return null;
+                      const proposer = proposerByVersion[release.version.toLowerCase()];
+                      const me = (connectedAddress || "").toLowerCase();
+                      // 2-of-3 needs a DISTINCT second key: the proposer sees an
+                      // inert chip (no wallet prompt, no gas) instead of Approve.
+                      if (proposer && me && proposer === me) {
+                        return (
+                          <span
+                            title="Proposer cannot approve their own release — switch to a different authorized dev key."
+                            className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-800 bg-slate-900/40 text-slate-500 text-[10px] cursor-not-allowed"
+                          >
+                            <ShieldCheck className="w-3 h-3" />
+                            Awaiting other dev (1/3)
+                          </span>
+                        );
+                      }
+                      return (
+                        <button
+                          type="button"
+                          onClick={() => onApproveUpdate(release.version)}
+                          className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-emerald-800/40 bg-emerald-950/20 text-emerald-400 hover:bg-emerald-950/40 transition-all text-[10px]"
+                        >
+                          <ShieldCheck className="w-3 h-3" />
+                          Approve
+                        </button>
+                      );
+                    })()}
                     {release.isLive && !release.isRevoked && (
                       <button
                         type="button"

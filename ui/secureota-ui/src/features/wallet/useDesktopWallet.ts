@@ -67,6 +67,26 @@ export function getAppKit() {
   return appKitInstance;
 }
 
+/** Bounded wait: closings, prompts, and handshakes must never hang the UI. */
+const raceTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      window.setTimeout(() => reject(new Error(label)), ms)
+    ),
+  ]);
+
+/** Chain IDs arrive in three shapes: number (31337), numeric string ("31337"),
+ *  CAIP ("eip155:31337"). Garbage yields null — never NaN (NaN !== 31337 is
+ *  always true and would wedge every chain gate permanently). */
+const parseChainId = (v: string | number | undefined): number | null => {
+  if (v === undefined || v === null) return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const tail = v.split(":").pop()?.trim() ?? "";
+  const n = Number(tail);
+  return tail !== "" && Number.isFinite(n) ? n : null;
+};
+
 /** Which key actually signed: phone wallet, browser extension, or node fallback. */
 export type SignerOrigin = "wallet" | "injected" | "dev-node";
 
@@ -107,6 +127,38 @@ export function useDesktopWallet() {
     return DEFAULT_CONTRACT_ADDRESS;
   });
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
+
+  // LAN RPC endpoint (P1 real-life): default localhost, overridable so a
+  // second laptop can point its UI at the presenting machine's node.
+  const [rpcUrl, setRpcUrl] = useState<string>(() => {
+    try {
+      const stored = localStorage.getItem("SECUREOTA_RPC_URL");
+      if (stored && stored.trim() && /^https?:\/\/.+/.test(stored.trim())) {
+        return stored.trim();
+      }
+    } catch {
+      // ignore — default below
+    }
+    return "http://127.0.0.1:8545";
+  });
+
+  // Strict validation: malformed input is rejected loudly, never persisted.
+  const updateRpcUrl = useCallback((url: string) => {
+    const clean = (url || "").trim().replace(/\/+$/, "");
+    if (!clean || !/^https?:\/\/[^/]+(:\d+)?$/.test(clean)) {
+      setStatusMessage(
+        `Invalid RPC URL rejected: "${url}" — expected http(s)://host[:port]; keeping current endpoint.`
+      );
+      return;
+    }
+    setRpcUrl(clean);
+    try {
+      localStorage.setItem("SECUREOTA_RPC_URL", clean);
+    } catch {
+      // non-fatal
+    }
+    setStatusMessage(`RPC endpoint set: ${clean}`);
+  }, []);
 
   // Check if connected account is one of the Hardhat authorized developers
   const isAuthorized = address
@@ -180,11 +232,11 @@ export function useDesktopWallet() {
       const modal = getAppKit();
       if (modal) {
         await modal.open();
-        // Subscribe to state
+        // Subscribe to state — AppKit may report CAIP strings, so normalize;
+        // garbage never becomes chain state (see parseChainId).
         modal.subscribeState((state: { selectedNetworkId?: string | number }) => {
-          if (state.selectedNetworkId) {
-            setChainId(Number(state.selectedNetworkId));
-          }
+          const parsed = parseChainId(state.selectedNetworkId);
+          if (parsed !== null) setChainId(parsed);
         });
       } else {
         // Fallback: open our custom high-visibility QR Code overlay modal
@@ -228,10 +280,21 @@ export function useDesktopWallet() {
     setStatusMessage(`Connected Dev #${devIndex + 1}: ${truncateAddress(devAddr)}`);
   }, []);
 
+  // Verified session identity (challenge-response): the connected address is
+  // a CLAIM until the operator signs a login challenge with the matching key
+  // AND the contract confirms authorizedDevelopers. Typing an address alone
+  // never verifies — possession + on-chain authorization, both required.
+  // Cleared on disconnect, account/contract/RPC change (re-verify after any).
+  const [verifiedAddress, setVerifiedAddress] = useState<string | null>(null);
+  useEffect(() => {
+    setVerifiedAddress(null);
+  }, [address, contractAddress, rpcUrl]);
+
   const disconnect = useCallback(() => {
     setAddress(null);
     setChainId(null);
     setIsConnected(false);
+    setVerifiedAddress(null);
     setStatusMessage("Wallet disconnected");
     const modal = getAppKit();
     if (modal) {
@@ -245,6 +308,39 @@ export function useDesktopWallet() {
 
   const [signerOrigin, setSignerOrigin] = useState<SignerOrigin | null>(null);
 
+  // Chain-verified authorization (real-life): the local HARDHAT_AUTHORIZED_DEVS
+  // list is a display hint only — the contract's authorizedDevelopers mapping
+  // is truth. Explicit false warns loudly; null means unknown (no contract /
+  // unreachable node) and never false-alarms.
+  const [chainAuthorized, setChainAuthorized] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!address || !contractAddress || !ethers.isAddress(contractAddress)) {
+      setChainAuthorized(null);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      try {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        if ((await provider.getCode(contractAddress)) === "0x") return;
+        const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, provider);
+        const ok = (await contract.authorizedDevelopers(address)) as boolean;
+        if (cancelled) return;
+        setChainAuthorized(ok);
+        if (!ok) {
+          setStatusMessage(
+            `Connected ${truncateAddress(address)} is NOT an authorized dev on this contract — propose/approve will revert. Switch wallet.`
+          );
+        }
+      } catch {
+        if (!cancelled) setChainAuthorized(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [address, contractAddress, rpcUrl]);
+
   const normalizeAddress = (addr: string | undefined): string | null => {
     if (!addr) return null;
     // AppKit may report CAIP `eip155:<chain>:<0x...>` — keep the hex tail.
@@ -255,6 +351,9 @@ export function useDesktopWallet() {
 
   // Keep UI identity in sync with the real AppKit session (QR-paired phone
   // included). Fires on connect, account switch, and disconnect/expiry.
+  // Plus boot-time validation: a restored session that cannot answer RPC
+  // within 5s is forgotten (covers app-close and dead-node cases — close
+  // always reads as disconnected on next open).
   useEffect(() => {
     const modal = getAppKit();
     if (!modal) return;
@@ -264,6 +363,25 @@ export function useDesktopWallet() {
       setIsConnected(s.isConnected === true && addr !== null);
       if (addr) {
         setStatusMessage(`Connected: ${truncateAddress(addr)}`);
+        // Authoritative chain: ask the live provider, not AppKit gossip.
+        // A stale/wrong state event can never wedge the gates again.
+        void (async () => {
+          try {
+            const wp = modal?.getWalletProvider() as unknown as
+              ethers.Eip1193Provider | undefined;
+            if (!wp) return;
+            const provider = new ethers.BrowserProvider(wp);
+            const net = await Promise.race([
+              provider.getNetwork(),
+              new Promise<never>((_, reject) =>
+                window.setTimeout(() => reject(new Error("chain probe timeout")), 5000)
+              ),
+            ]);
+            setChainId(Number(net.chainId));
+          } catch {
+            // leave prior chain state; per-tx checks still guard broadcasts
+          }
+        })();
       } else if (s.isConnected === false) {
         setStatusMessage("Wallet disconnected (session ended — re-scan to reconnect)");
       }
@@ -276,8 +394,61 @@ export function useDesktopWallet() {
     } catch {
       // ignore — subscription below covers live changes
     }
+    // Boot validation: restored WC sessions must prove liveness. A dead
+    // relay/phone/node answers nothing — forget it instead of trusting it.
+    void (async () => {
+      try {
+        const cur = modal.getAccount() as unknown as
+          { address?: string; isConnected?: boolean } | undefined;
+        if (!cur?.isConnected || !cur?.address) return;
+        const wp = modal?.getWalletProvider() as unknown as
+          ethers.Eip1193Provider | undefined;
+        if (!wp) return; // dev/injected sessions validate through their own flows
+        const provider = new ethers.BrowserProvider(wp);
+        const net = await Promise.race([
+          provider.getNetwork(),
+          new Promise<never>((_, reject) =>
+            window.setTimeout(() => reject(new Error("stale session")), 5000)
+          ),
+        ]);
+        // A session that answers is also a chain source of truth.
+        setChainId(Number(net.chainId));
+      } catch {
+        try {
+          await modal.disconnect();
+        } catch {
+          // ignore — state reset below is the guarantee, relay drop is bonus
+        }
+        setAddress(null);
+        setChainId(null);
+        setIsConnected(false);
+        setStatusMessage("Wallet disconnected (session ended — re-scan to reconnect)");
+      }
+    })();
     const unsub = modal.subscribeAccount(sync);
     return unsub;
+  }, []);
+
+  // Best-effort forget on close (pagehide covers desktop + mobile; browsers
+  // may skip async work here, so boot validation above is the guarantee).
+  useEffect(() => {
+    const forget = () => {
+      try {
+        const modal = getAppKit();
+        void modal?.disconnect?.();
+      } catch {
+        // ignore — closing anyway
+      }
+      setAddress(null);
+      setChainId(null);
+      setIsConnected(false);
+    };
+    window.addEventListener("pagehide", forget);
+    window.addEventListener("beforeunload", forget);
+    return () => {
+      window.removeEventListener("pagehide", forget);
+      window.removeEventListener("beforeunload", forget);
+    };
   }, []);
 
   // Resolve the EIP-1193 provider of an AppKit-paired wallet (MetaMask
@@ -293,13 +464,25 @@ export function useDesktopWallet() {
     }
   };
 
-  // Signer priority: real phone wallet first, browser extension second,
-  // Hardhat unlocked accounts last (labeled dev fallback — no phone prompt).
+  // Signer priority (extension-first): browser extension first (same-machine,
+  // localhost RPC, no relay or tunnel involved), phone wallet second,
+  // Hardhat unlocked accounts last in dev builds only (labeled dev fallback).
   // Throws a clear error when the active wallet sits on the wrong chain.
   const getSigner = useCallback(async (): Promise<{
     signer: ethers.Signer;
     origin: SignerOrigin;
   }> => {
+    const injected = await getInjectedProvider();
+    if (injected) {
+      const net = await injected.getNetwork();
+      if (Number(net.chainId) !== HARDHAT_CHAIN_ID) {
+        throw new Error(
+          `Injected wallet is on chain ${net.chainId} — switch to Hardhat Localhost (chain ${HARDHAT_CHAIN_ID}).`
+        );
+      }
+      setSignerOrigin("injected");
+      return { signer: await injected.getSigner(), origin: "injected" as const };
+    }
     const wc = getAppKitWalletProvider();
     if (wc) {
       const provider = new ethers.BrowserProvider(wc);
@@ -311,17 +494,6 @@ export function useDesktopWallet() {
       }
       setSignerOrigin("wallet");
       return { signer: await provider.getSigner(), origin: "wallet" as const };
-    }
-    const injected = await getInjectedProvider();
-    if (injected) {
-      const net = await injected.getNetwork();
-      if (Number(net.chainId) !== HARDHAT_CHAIN_ID) {
-        throw new Error(
-          `Injected wallet is on chain ${net.chainId} — switch to Hardhat Localhost (chain ${HARDHAT_CHAIN_ID}).`
-        );
-      }
-      setSignerOrigin("injected");
-      return { signer: await injected.getSigner(), origin: "injected" as const };
     }
     // P0-4: dev-node fallback exists ONLY in dev builds. Production
     // (packaged app is always a prod build) is external-wallets-only —
@@ -335,16 +507,83 @@ export function useDesktopWallet() {
       );
     }
     // In dev/desktop headless mode without any wallet, sign with the local
-    // Hardhat node's unlocked accounts (http://127.0.0.1:8545). No phone
+    // Hardhat node's unlocked accounts (configurable LAN RPC). No phone
     // prompt happens on this path — callers must label it honestly.
-    const jsonRpcProvider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+    const jsonRpcProvider = new ethers.JsonRpcProvider(rpcUrl);
     setSignerOrigin("dev-node");
     if (address) {
       return { signer: await jsonRpcProvider.getSigner(address), origin: "dev-node" as const };
     }
     // Default to first account on the node
     return { signer: await jsonRpcProvider.getSigner(0), origin: "dev-node" as const };
-  }, [address, getInjectedProvider]);
+  }, [address, getInjectedProvider, rpcUrl]);
+
+  /**
+   * Prove ownership of the connected session address: sign a fresh login
+   * challenge, recover the signer, require equality with the session claim,
+   * then require contract authorization. Resolves the checksummed address;
+   * throws operator-worded errors otherwise (never verifies silently).
+   * Defined after getSigner (declaration order matters to the compiler).
+   */
+  const verifyIdentity = useCallback(async (): Promise<string> => {
+    if (!address) {
+      throw new Error("No wallet session — connect first, then verify ownership.");
+    }
+    if (!contractAddress || !ethers.isAddress(contractAddress)) {
+      throw new Error("No contract configured — set the deployed address in Contract Config first.");
+    }
+    const { signer, origin } = await raceTimeout(
+      getSigner(),
+      60000,
+      "Timed out reaching a signer — no wallet answered (app closed? session dead?). Reconnect and retry."
+    );
+    // Stamp the verified truth: the signer's live network overwrites any
+    // gossip the state subscription carried. Gate and signer can no longer
+    // disagree after a successful verification.
+    try {
+      const prov = signer.provider as unknown as ethers.Provider | null;
+      if (prov) {
+        const net = await raceTimeout(prov.getNetwork(), 5000, "reading wallet network");
+        setChainId(Number(net.chainId));
+      }
+    } catch {
+      // non-fatal: per-tx chain checks still guard every broadcast
+    }
+    const nonce = ethers.hexlify(ethers.randomBytes(8));
+    const message = `DeltaOTA console login\ncontract: ${contractAddress}\nnonce: ${nonce}`;
+    setStatusMessage(
+      origin === "dev-node"
+        ? "Signing login challenge via DEV SIGNER (no phone prompt)..."
+        : "Signing login challenge — approve in your wallet (60s timeout)..."
+    );
+    const signature = await raceTimeout(
+      signer.signMessage(message),
+      60000,
+      "Timed out waiting for the login signature — the challenge was not approved (prompt ignored? wrong app?). No session was verified. Retry."
+    );
+    const recovered = ethers.verifyMessage(message, signature);
+    if (recovered.toLowerCase() !== address.toLowerCase()) {
+      throw new Error(
+        `Challenge signed by ${truncateAddress(recovered)} — does not match connected ${truncateAddress(address)}. Session NOT verified (wrong account signed?).`
+      );
+    }
+    const provider = new ethers.JsonRpcProvider(rpcUrl);
+    if ((await provider.getCode(contractAddress)) === "0x") {
+      throw new Error(
+        `No contract code at ${contractAddress} on ${rpcUrl} — deploy first. Session NOT verified.`
+      );
+    }
+    const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, provider);
+    if (!(await contract.authorizedDevelopers(recovered))) {
+      throw new Error(
+        `${truncateAddress(recovered)} proved key ownership but is NOT an authorized dev on this contract — console stays read-only.`
+      );
+    }
+    const checksummed = ethers.getAddress(recovered);
+    setVerifiedAddress(checksummed);
+    setStatusMessage(`Identity verified: ${truncateAddress(checksummed)} (authorized dev, challenge-signed).`);
+    return checksummed;
+  }, [address, contractAddress, rpcUrl, getSigner]);
 
   /**
    * Payload 1: proposeRelease(bytes32 version, bytes32 goldenHash, string ipfsUrl)
@@ -433,8 +672,11 @@ export function useDesktopWallet() {
    */
   const fetchRelease = useCallback(
     async (version: string): Promise<OnChainReleaseRecord | null> => {
+      // Empty/malformed address: nothing to query (empty default until the
+      // operator configures a deployment). Return quietly — no ENS noise.
+      if (!contractAddress || !ethers.isAddress(contractAddress)) return null;
       try {
-        const jsonRpcProvider = new ethers.JsonRpcProvider("http://127.0.0.1:8545");
+        const jsonRpcProvider = new ethers.JsonRpcProvider(rpcUrl);
         const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, jsonRpcProvider);
         const versionBytes32 = formatVersionBytes32(version);
         const raw = await contract.getRelease(versionBytes32);
@@ -464,7 +706,7 @@ export function useDesktopWallet() {
         return null;
       }
     },
-    [contractAddress]
+    [contractAddress, rpcUrl]
   );
 
   return {
@@ -476,9 +718,15 @@ export function useDesktopWallet() {
     connectionUri,
     isQrModalOpen,
     contractAddress,
+    rpcUrl,
     statusMessage,
     signerOrigin,
+    chainAuthorized,
+    verifiedAddress,
+    isVerified: verifiedAddress !== null,
+    verifyIdentity,
     updateContractAddress,
+    updateRpcUrl,
     connectInjected,
     openWalletModal,
     openCustomQrModal,

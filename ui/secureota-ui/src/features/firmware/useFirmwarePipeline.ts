@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
+import { ethers } from "ethers";
 import type { LogEntry } from "../../components/organisms/SystemsLogTerminal";
 import type { LedgerRelease } from "../../components/organisms/LedgerDeploymentsTable";
 import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
@@ -16,6 +17,56 @@ export type UpdateState = "idle" | "developer" | "blockchain" | "gateway" | "iot
 export type BinaryKind = "base" | "target";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Unstick guard (real-life): every wallet/network wait races a clock. On
+// expiry the error is already operator-worded, so explainTxError passes it
+// through and loadingStep resets in the caller's finally.
+const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =>
+  Promise.race([
+    p,
+    new Promise<never>((_, reject) =>
+      window.setTimeout(
+        () =>
+          reject(
+            new Error(
+              `Timed out after ${ms / 1000}s ${label} — no response arrived (phone app closed? wrong network? node down? relay down?). No transaction was sent. Retry or use a Dev signer.`
+            )
+          ),
+        ms
+      )
+    ),
+  ]);
+
+// Real-life revert copy: map raw ethers reasons to the one operator action
+// that actually fixes each failure. Falls back to the raw message.
+const explainTxError = (err: unknown): string => {
+  const msg = err instanceof Error ? err.message : "Contract call failed";
+  const low = msg.toLowerCase();
+  // Phone-wallet gas estimation via its own RPC (not our node): the user saw
+  // this as code 5000 "Custom eth_gasPrice ... too many errors". Must precede
+  // the generic gas branch or it mislabels every time.
+  if (low.includes("eth_gasprice") || low.includes("too many errors") || low.includes("different rpc endpoint"))
+    return `${msg} — the phone wallet estimated gas via its own RPC, not your node. Add a custom MetaMask Mobile network (RPC = LAN IP or cloudflared tunnel URL, chain 31337), switch to it, and retry. DevSigner fallback needs no phone network.`;
+  if (low.includes("timed out"))
+    return msg; // already operator-worded at the throw site
+  if (low.includes("invalid address"))
+    return `${msg} — no contract configured (empty or malformed address). Set the deployed address in Contract Config first.`;
+  if (low.includes("already proposed") || low.includes("duplicate"))
+    return `${msg} — version already proposed on this chain (fresh node per run: restart Hardhat, redeploy, retry).`;
+  if (low.includes("already revoked") || low.includes("revoked"))
+    return `${msg} — release is revoked on-chain; propose a new version instead.`;
+  if (low.includes("not authorized") || low.includes("not a dev") || low.includes("unauthorized"))
+    return `${msg} — signer is not one of the 3 authorized devs; switch wallet and retry.`;
+  if (low.includes("already signed") || low.includes("already approved") || low.includes("hassigned"))
+    return `${msg} — this key already signed (proposer counts as signature 1); switch to a different dev key.`;
+  if (low.includes("user rejected") || low.includes("user denied") || low.includes("action_rejected"))
+    return "Wallet rejected the signature in MetaMask — no transaction was sent; retry and approve the prompt.";
+  if (low.includes("network") || low.includes("econnrefused") || low.includes("fetch failed") || low.includes("could not detect network"))
+    return `${msg} — node unreachable at the configured RPC URL; check the node process and Contract Config → RPC URL.`;
+  if (low.includes("insufficient funds") || low.includes("gas"))
+    return `${msg} — gas/funds issue on the local node; restart Hardhat and retry.`;
+  return msg;
+};
 
 // Honest-execution gate (P0-1): offline progression is OFF by default.
 // Enabled only in dev via explicit VITE_ALLOW_OFFLINE_PROGRESSION="true"
@@ -72,33 +123,16 @@ export function useFirmwarePipeline() {
     setWalletConnected(wallet.isConnected);
   }, [wallet.isConnected]);
 
-  // Initial Logs
+  // Initial Logs — honest boot: nothing is claimed before the first RPC call.
   const [logs, setLogs] = useState<LogEntry[]>([
-    { id: 1, time: "09:14:21", message: "[SHA-256] Computing golden hash for delta patch (v1.1 firmware)...", type: "info" },
-    { id: 2, time: "09:14:23", message: "[Multi-Sig] Contract 0x5FbDB...0aa3 initialized on Hardhat Localhost.", type: "success" },
-    { id: 3, time: "09:14:25", message: "[Wallet] Mobile MetaMask QR & Dev signers ready on Chain 31337.", type: "info" },
-    { id: 4, time: "09:14:27", message: "[Gateway] Ready to poll DeltaOTA smart contract state transitions.", type: "info" },
+    { id: 1, time: "09:14:21", message: "[Boot] Developer Console started — querying deployed contract...", type: "info" },
+    { id: 2, time: "09:14:21", message: "[Chain] No cached releases. Ledger fills only from on-chain state.", type: "info" },
   ]);
 
-  // Initial Releases Ledger State
-  const [releases, setReleases] = useState<LedgerRelease[]>([
-    {
-      version: "v1.1",
-      goldenHash: "0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f",
-      approvalCount: 1,
-      maxApprovals: 3, // 2-of-3 multi-sig threshold
-      isLive: false,
-      isRevoked: false,
-    },
-    {
-      version: "v1.0",
-      goldenHash: "0x3f7a1c9e8b2d4f6a0e1c3b5d7f9a2c4e6b8d0f1a3c5e7b9d1f3a5c7e9b1d3f5a",
-      approvalCount: 2,
-      maxApprovals: 3,
-      isLive: true,
-      isRevoked: false,
-    },
-  ]);
+  // Ledger starts EMPTY by design (real-life rule): every row must be earned
+  // from an on-chain getRelease record. The table's empty-state copy covers
+  // the boot screen; rows appear only via mergeChainRecord below.
+  const [releases, setReleases] = useState<LedgerRelease[]>([]);
 
   const addLog = useCallback((message: string, type: LogEntry["type"] = "info") => {
     const time = new Date().toLocaleTimeString("en-US", { hour12: false });
@@ -110,6 +144,17 @@ export function useFirmwarePipeline() {
 
   // P0-5: proposer per version (receipt.from at propose time), lowercased.
   const [proposers, setProposers] = useState<Record<string, string>>({});
+
+  // Surface chain-verified (un)authorization once per connect — the wallet
+  // hook owns the check, the terminal owns the visibility.
+  const warnedUnauthorized = useRef(false);
+  useEffect(() => {
+    if (wallet.chainAuthorized === false && !warnedUnauthorized.current) {
+      warnedUnauthorized.current = true;
+      addLog("[Governance] Connected wallet is NOT an authorized dev on this contract — on-chain calls will revert. Switch wallet.", "error");
+    }
+    if (wallet.chainAuthorized !== false) warnedUnauthorized.current = false;
+  }, [wallet.chainAuthorized, addLog]);
   // P0-2: chain-sync flag — local releases are a cache until first poll lands.
   const [chainSynced, setChainSynced] = useState(false);
   const releasesRef = useRef<LedgerRelease[]>([]);
@@ -117,8 +162,13 @@ export function useFirmwarePipeline() {
   const fetchReleaseRef = useRef(wallet.fetchRelease);
   fetchReleaseRef.current = wallet.fetchRelease;
 
+  // A never-proposed version reads back as all-zero/empty — not a row.
+  const isAbsentRecord = (rec: OnChainReleaseRecord) =>
+    !rec.goldenHash && rec.approvalCount === 0 && !rec.isLive && !rec.isRevoked;
+
   const mergeChainRecord = useCallback(
     (version: string, rec: OnChainReleaseRecord) => {
+      if (isAbsentRecord(rec)) return;
       const prev = releasesRef.current.find((r) => r.version === version);
       if (
         prev &&
@@ -135,8 +185,24 @@ export function useFirmwarePipeline() {
           addLog(`[Chain] ${version} synced: approvals ${rec.approvalCount}/3 live=${rec.isLive} revoked=${rec.isRevoked}.`, "info");
         }
       }
-      setReleases((prevList) =>
-        prevList.map((r) =>
+      if (!prev) {
+        addLog(`[Chain] ${version} found on-chain: approvals ${rec.approvalCount}/3 live=${rec.isLive} revoked=${rec.isRevoked}.`, "success");
+      }
+      setReleases((prevList) => {
+        if (!prevList.some((r) => r.version === version)) {
+          return [
+            {
+              version,
+              goldenHash: rec.goldenHash,
+              approvalCount: rec.approvalCount,
+              maxApprovals: 3, // 2-of-3 multi-sig threshold
+              isLive: rec.isLive,
+              isRevoked: rec.isRevoked,
+            },
+            ...prevList,
+          ];
+        }
+        return prevList.map((r) =>
           r.version === version
             ? {
                 ...r,
@@ -146,30 +212,47 @@ export function useFirmwarePipeline() {
                 isRevoked: rec.isRevoked,
               }
             : r
-        )
-      );
+        );
+      });
       setChainSynced(true);
     },
     [addLog]
   );
 
+  // Candidate versions to probe: static well-known tags plus the locally
+  // staged target (so a freshly built v1.2 appears once proposed on-chain).
+  // Chain remains the only source of rows — absent records add nothing.
+  const targetFileRef = useRef(targetFile);
+  targetFileRef.current = targetFile;
+
   // P0-2: chain as source of truth — 4s poll over direct RPC (works with or
-  // without a wallet session). On-chain revoke/approve/promote reflects
-  // within one interval without clicks.
+  // without a wallet session). Probes candidate versions; only on-chain
+  // records become rows. On-chain revoke/approve/promote reflects
+  // within one interval without clicks. Changing contract address wipes the
+  // cache first so rows from the old deployment never linger.
   useEffect(() => {
+    setReleases([]);
+    setChainSynced(false);
     let cancelled = false;
     const syncOnce = async () => {
-      const versions = releasesRef.current.map((r) => r.version);
-      for (const v of versions) {
+      const candidates = ["v1.0", "v1.1"];
+      const staged = targetFileRef.current
+        ? deriveVersionTag(targetFileRef.current.name)
+        : null;
+      if (staged && !candidates.includes(staged)) candidates.push(staged);
+      let answered = false;
+      for (const v of candidates) {
         try {
           const rec = await fetchReleaseRef.current(v);
           if (cancelled || !rec) continue;
+          answered = true;
           mergeChainRecord(v, rec);
         } catch {
           // Poll failures keep the last cache; staleness is visible via
           // chainSynced staying false / logs, never fake-live data.
         }
       }
+      if (answered) setChainSynced(true);
     };
     void syncOnce();
     const id = window.setInterval(() => void syncOnce(), 4000);
@@ -314,10 +397,21 @@ export function useFirmwarePipeline() {
    */
   const handleRequestApproval = async () => {
     if (!walletConnected || loadingStep) return;
+    if (!wallet.isVerified) {
+      // Identity first: an unverified session signs nothing, not even loudly.
+      addLog("[Identity] Verify wallet ownership first (Extension tab → Verify ownership). Proposal refused.", "error");
+      return;
+    }
     setLoadingStep("approval");
 
     const targetVersion = targetFile ? deriveVersionTag(targetFile.name) : "v1.1";
     const targetHash = goldenHash ?? "";
+    if (!wallet.contractAddress || !ethers.isAddress(wallet.contractAddress)) {
+      // No deployment targeted — broadcasting would throw "invalid address".
+      addLog("[Smart Contract] No contract configured — set the deployed address in Contract Config (wallet popup) first. Proposal refused.", "error");
+      setLoadingStep(null);
+      return;
+    }
     if (!targetHash) {
       // P1-1: never anchor a placeholder hash on-chain.
       addLog("[Smart Contract] No golden hash available — generate the delta first. Proposal refused.", "error");
@@ -330,6 +424,13 @@ export function useFirmwarePipeline() {
       setLoadingStep(null);
       return;
     }
+    // URL-scheme guard: the contract stores any string, but the gateway only
+    // downloads http(s)/file. Refuse anything else before any wallet prompt.
+    if (!/^https?:\/\/.+/.test(targetUrl) && !targetUrl.startsWith("file://")) {
+      addLog(`[Smart Contract] Refusing to anchor "${targetUrl.slice(0, 60)}..." — not fetchable by the gateway (use the hosted http(s) download URL; bare ipfs:// and app schemes do not resolve).`, "error");
+      setLoadingStep(null);
+      return;
+    }
 
     addLog(
       `[Payload Formatter] Formatting proposeRelease(version: "${targetVersion}", goldenHash: "${formatGoldenHashBytes32(targetHash).slice(0, 18)}...", ipfsUrl: "${targetUrl.slice(0, 30)}...")`,
@@ -338,8 +439,30 @@ export function useFirmwarePipeline() {
 
     try {
       if (wallet.isConnected) {
+        // Node preflight (5s): fail here with a named error instead of
+        // hanging inside gas estimation against a dead endpoint.
+        await withTimeout(
+          new ethers.JsonRpcProvider(wallet.rpcUrl).getNetwork(),
+          5000,
+          "contacting the node"
+        );
+        // Pre-prompt log: "waiting on you" and "dead" must never look alike.
+        // signerOrigin is last-known (set by the previous getSigner call).
+        if (wallet.signerOrigin === "dev-node") {
+          addLog("[Signer] DEV SIGNER active — no phone prompt will appear; signing via local node...", "warning");
+        } else if (wallet.signerOrigin === "wallet") {
+          addLog("[Signer] Signature request sent to MetaMask phone — approve in the app now (60s timeout)...", "info");
+        } else if (wallet.signerOrigin === "injected") {
+          addLog("[Signer] Signature request sent to browser extension — approve the prompt (60s timeout)...", "info");
+        } else {
+          addLog("[Signer] Requesting signature from active wallet (60s timeout)...", "info");
+        }
         addLog(`[Smart Contract] Broadcasting proposeRelease via signer ${truncateAddress(wallet.address || "")}...`, "info");
-        const receipt = await wallet.proposeRelease(targetVersion, targetHash, targetUrl);
+        const receipt = await withTimeout(
+          wallet.proposeRelease(targetVersion, targetHash, targetUrl),
+          60000,
+          "waiting for wallet signature"
+        );
         addLog(`[Blockchain] Tx Mined: ${receipt.hash.slice(0, 20)}... in block #${receipt.blockNumber}`, "success");
         addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", receipt.origin === "dev-node" ? "warning" : "success");
         addLog("[Multi-Sig] Signature 1 of 2 (2-of-3 multisig) anchored on-chain! Awaiting second dev approval.", "success");
@@ -382,7 +505,7 @@ export function useFirmwarePipeline() {
         // Poll loop will converge on next interval.
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Contract call failed";
+      const msg = explainTxError(err);
       addLog(`[Smart Contract Error] ${msg}`, "error");
       if (ALLOW_OFFLINE_PROGRESSION) {
         // Still allow step progression in local testing
@@ -400,13 +523,31 @@ export function useFirmwarePipeline() {
    * Formats and executes payload: revokeRelease(bytes32 version)
    */
   const handleExecuteKillSwitch = async (version: string) => {
+    if (!wallet.isVerified) {
+      addLog("[Identity] Verify wallet ownership first (Extension tab → Verify ownership). Revoke refused.", "error");
+      return;
+    }
     addLog(`[GOVERNANCE] KILL SWITCH TRIGGERED for ${version}...`, "warning");
     addLog(`[Payload Formatter] Formatting revokeRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
 
     try {
       if (wallet.isConnected) {
+        await withTimeout(
+          new ethers.JsonRpcProvider(wallet.rpcUrl).getNetwork(),
+          5000,
+          "contacting the node"
+        );
+        if (wallet.signerOrigin === "dev-node") {
+          addLog("[Signer] DEV SIGNER active — no phone prompt will appear; signing via local node...", "warning");
+        } else {
+          addLog("[Signer] Revoke request sent — approve in your wallet now (60s timeout)...", "info");
+        }
         addLog(`[Smart Contract] Calling revokeRelease("${version}") on ${wallet.contractAddress}...`, "info");
-        const receipt = await wallet.revokeRelease(version);
+        const receipt = await withTimeout(
+          wallet.revokeRelease(version),
+          60000,
+          "waiting for wallet signature"
+        );
         addLog(`[Blockchain] Release revoked in block #${receipt.blockNumber} (tx: ${receipt.hash.slice(0, 16)}...)`, "error");
         addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", "warning");
       } else {
@@ -425,7 +566,7 @@ export function useFirmwarePipeline() {
         // Poll loop converges next interval.
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Revoke failed";
+      const msg = explainTxError(err);
       addLog(`[Kill Switch Error] ${msg}`, "error");
       if (ALLOW_OFFLINE_PROGRESSION) {
         setReleases((prev) =>
@@ -442,6 +583,10 @@ export function useFirmwarePipeline() {
    * Formats and executes payload: approveRelease(bytes32 version)
    */
   const handleApproveUpdate = async (version: string) => {
+    if (!wallet.isVerified) {
+      addLog("[Identity] Verify wallet ownership first (Extension tab → Verify ownership). Approval refused.", "error");
+      return;
+    }
     addLog(`[Governance] Signing 2-of-3 threshold approval for ${version}...`, "info");
     addLog(`[Payload Formatter] Formatting approveRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
 
@@ -457,8 +602,22 @@ export function useFirmwarePipeline() {
 
     try {
       if (wallet.isConnected) {
+        await withTimeout(
+          new ethers.JsonRpcProvider(wallet.rpcUrl).getNetwork(),
+          5000,
+          "contacting the node"
+        );
+        if (wallet.signerOrigin === "dev-node") {
+          addLog("[Signer] DEV SIGNER active — no phone prompt will appear; signing via local node...", "warning");
+        } else {
+          addLog("[Signer] Approval request sent — approve in your wallet now (60s timeout)...", "info");
+        }
         addLog(`[Smart Contract] Calling approveRelease("${version}") from ${truncateAddress(wallet.address || "")}...`, "info");
-        const receipt = await wallet.approveRelease(version);
+        const receipt = await withTimeout(
+          wallet.approveRelease(version),
+          60000,
+          "waiting for wallet signature"
+        );
         addLog(`[Blockchain] Threshold approval confirmed in block #${receipt.blockNumber}!`, "success");
         addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", receipt.origin === "dev-node" ? "warning" : "success");
       } else {
@@ -491,7 +650,7 @@ export function useFirmwarePipeline() {
         // Poll loop converges next interval.
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : "Approval failed";
+      const msg = explainTxError(err);
       addLog(`[Approve Error] ${msg}`, "error");
       if (ALLOW_OFFLINE_PROGRESSION) {
         // Update state for manual test workflow
@@ -513,11 +672,16 @@ export function useFirmwarePipeline() {
       addLog("[Error] Complete all 5 workflow steps before triggering deployment.", "error");
       return;
     }
+    // Honest copy: with a real build, narrate the real artifact; otherwise
+    // label the run as simulation with no on-chain effect.
+    const isReal = Boolean(goldenHash && patchUrl);
+    const simTag = isReal ? "" : "[SIMULATION — no on-chain effect] ";
+    const sizeTag = isReal && deltaSizeKb !== null ? `${deltaSizeKb} KB` : "45 KB (simulated)";
     setUpdateState("developer");
-    addLog("[Developer Console] Uploading delta patch v1.1 (45 KB) to IPFS...", "info");
+    addLog(`[Developer Console] ${simTag}Uploading delta patch ${targetFile ? deriveVersionTag(targetFile.name) : "v1.1"} (${sizeTag})...`, "info");
     await delay(1000);
     setUpdateState("blockchain");
-    addLog("[Blockchain] Anchoring Golden Hash to Smart Contract...", "info");
+    addLog(`[Blockchain] ${simTag}Anchoring golden hash ${goldenHash ? goldenHash.slice(0, 18) + "..." : "(simulated)"}...`, "info");
     await delay(1200);
     setUpdateState("gateway");
     addLog("[Edge Gateway] Polling contract... Payload verified against Golden Hash.", "success");
@@ -553,6 +717,7 @@ export function useFirmwarePipeline() {
     compressionRatio,
     wallet,
     chainSynced,
+    proposers,
     handleLoadBinaries,
     handleLoadBinaryFile,
     handleGenerateDelta,

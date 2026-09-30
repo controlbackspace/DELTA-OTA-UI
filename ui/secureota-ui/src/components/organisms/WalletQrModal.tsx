@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from "react";
 import QRCode from "qrcode";
+import { ethers } from "ethers";
 import {
   X,
   QrCode,
   Smartphone,
   Copy,
   Check,
-  ExternalLink,
   Shield,
   Zap,
   Info,
@@ -27,11 +27,16 @@ export interface WalletQrModalProps {
   onClose: () => void;
   connectionUri?: string | null;
   connectedAddress?: string | null;
+  connectedChainId?: number | null;
+  isVerified?: boolean;
+  onVerifyIdentity: () => Promise<unknown>;
   onSelectDevAccount: (devIndex: number) => void;
-  onConnectInjected: () => Promise<unknown>;
+  onDisconnect: () => void;
   onOpenWalletConnect: () => void;
   contractAddress: string;
   onUpdateContractAddress: (addr: string) => void;
+  rpcUrl: string;
+  onUpdateRpcUrl: (url: string) => void;
   statusMessage?: string | null;
 }
 
@@ -40,24 +45,33 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   onClose,
   connectionUri,
   connectedAddress,
+  connectedChainId = null,
+  isVerified = false,
+  onVerifyIdentity,
   onSelectDevAccount,
-  onConnectInjected,
+  onDisconnect,
   onOpenWalletConnect,
   contractAddress,
   onUpdateContractAddress,
+  rpcUrl,
+  onUpdateRpcUrl,
   statusMessage,
 }) => {
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [copied, setCopied] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"qr" | "hardhat" | "config">("qr");
-  const [injectedLoading, setInjectedLoading] = useState<boolean>(false);
-  const [injectedError, setInjectedError] = useState<string | null>(null);
   // P0-3: draft + explicit save so garbage is rejected loudly, never persisted.
   const [draftAddress, setDraftAddress] = useState<string>(contractAddress);
   const [addressError, setAddressError] = useState<string | null>(null);
+  const [draftRpcUrl, setDraftRpcUrl] = useState<string>(rpcUrl);
+  const [rpcError, setRpcError] = useState<string | null>(null);
+  const [verifyLoading, setVerifyLoading] = useState<boolean>(false);
+  const [verifyError, setVerifyError] = useState<string | null>(null);
 
   // P0-4: production has no dev tab — force back to QR if it was selected.
   const effectiveTab = !isDevBuild && activeTab === "hardhat" ? "qr" : activeTab;
+  // Live chain pill: desired 31337 is the fallback; a known-wrong chain warns.
+  const chainOk = connectedChainId === null || connectedChainId === 31337;
   const draftValid = isValidEthereumAddress(draftAddress.trim());
 
   // A QR is rendered ONLY from a live session URI. There is deliberately no
@@ -86,8 +100,10 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
     if (isOpen) {
       setDraftAddress(contractAddress);
       setAddressError(null);
+      setDraftRpcUrl(rpcUrl);
+      setRpcError(null);
     }
-  }, [isOpen, contractAddress]);
+  }, [isOpen, contractAddress, rpcUrl]);
 
   const handleSaveAddress = () => {
     const clean = draftAddress.trim();
@@ -104,6 +120,36 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
     if (!ok) return;
     setAddressError(null);
     onUpdateContractAddress(clean);
+    // Stale-address check (real-life): warn when no contract lives at the
+    // saved address on the configured RPC — the old address stays in the
+    // failure copy so the operator knows what is still active.
+    void (async () => {
+      try {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const code = await provider.getCode(clean);
+        if (code === "0x") {
+          setAddressError(
+            `Saved, but no contract code at ${clean} on ${rpcUrl} — deploy first (npx hardhat run scripts/deploy.js). Calls will fail until then.`
+          );
+        }
+      } catch {
+        setAddressError(
+          `Saved, but ${rpcUrl} is unreachable — cannot verify contract code. Check the node and RPC URL.`
+        );
+      }
+    })();
+  };
+
+  const handleSaveRpcUrl = () => {
+    const clean = draftRpcUrl.trim().replace(/\/+$/, "");
+    if (!clean || !/^https?:\/\/[^/]+(:\d+)?$/.test(clean)) {
+      setRpcError(
+        `Invalid RPC URL — expected http(s)://host[:port]. Got "${draftRpcUrl}". Nothing saved.`
+      );
+      return;
+    }
+    setRpcError(null);
+    onUpdateRpcUrl(clean);
   };
 
   if (!isOpen) return null;
@@ -115,16 +161,18 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
     setTimeout(() => setCopied(false), 2000);
   };
 
-  const handleInjected = async () => {
-    setInjectedLoading(true);
-    setInjectedError(null);
+  // Challenge-response ownership proof: the connected address is a claim
+  // until the key holder signs the login challenge. Typing an address alone
+  // never verifies — this prompt is the verification.
+  const handleVerify = async () => {
+    setVerifyLoading(true);
+    setVerifyError(null);
     try {
-      await onConnectInjected();
-      onClose();
+      await onVerifyIdentity();
     } catch (err: unknown) {
-      setInjectedError(err instanceof Error ? err.message : "Injected connection failed");
+      setVerifyError(err instanceof Error ? err.message : "Identity verification failed");
     } finally {
-      setInjectedLoading(false);
+      setVerifyLoading(false);
     }
   };
 
@@ -140,7 +188,11 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             <div>
               <h2 className="text-sm font-semibold text-white font-sans flex items-center gap-2">
                 Desktop Wallet Connection
-                <StatusPill color="cyan" label="Chain ID: 31337" dot />
+                {chainOk ? (
+                  <StatusPill color="cyan" label={`Chain ID: ${connectedChainId ?? 31337}`} dot />
+                ) : (
+                  <StatusPill color="amber" label={`Chain ID: ${connectedChainId} — switch to 31337`} dot />
+                )}
               </h2>
               <p className="text-xs text-slate-400 font-sans">
                 MetaMask Mobile QR Code & Hardhat Localhost
@@ -156,7 +208,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
           </button>
         </div>
 
-        {/* Tab Navigation */}
+        {/* Tab Navigation — phone QR first, dev signers (dev builds), config. */}
         <div className="flex border-b border-[#1a2a3a] bg-[#091222] px-6 text-xs font-sans">
           <button
             type="button"
@@ -198,10 +250,63 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
           </button>
         </div>
 
-        {/* Modal Body */}
-        <div className="p-6 overflow-y-auto flex-1 space-y-4">
+        {/* Modal Body — single vertical rhythm (space-y-5); sections never
+            share a tighter gap than the outer scale. */}
+        <div className="px-6 py-5 overflow-y-auto flex-1 space-y-5">
           {effectiveTab === "qr" && (
-            <div className="flex flex-col items-center text-center space-y-4">
+            <div className="flex flex-col items-center text-center space-y-5">
+              {/* Identity panel — the connected address is a claim until the
+                  key holder signs the login challenge (works for phone and
+                  dev sessions alike). Signing stays locked while unverified. */}
+              {connectedAddress && (
+                <div className="w-full p-4 rounded-lg bg-emerald-950/20 border border-emerald-800/40 space-y-2 text-left">
+                  <div className="flex items-center gap-2">
+                    {isVerified ? (
+                      <StatusPill color="emerald" label="Verified owner" dot />
+                    ) : (
+                      <StatusPill color="amber" label="Unverified" dot />
+                    )}
+                    <code className="text-xs text-emerald-300 font-mono">{connectedAddress}</code>
+                  </div>
+                  {!chainOk && (
+                    <p className="text-[11px] font-sans text-amber-300">
+                      Wrong network — switch to Hardhat Localhost (chain 31337). Sign &amp; Propose stays disabled until then.
+                    </p>
+                  )}
+                  {!isVerified ? (
+                    <div className="space-y-2">
+                      <button
+                        type="button"
+                        onClick={handleVerify}
+                        disabled={verifyLoading}
+                        className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-lg border border-emerald-500/50 bg-emerald-950/40 hover:bg-emerald-900/40 text-sm text-emerald-200 transition-all font-sans disabled:opacity-50"
+                      >
+                        <Shield className="w-4 h-4" />
+                        {verifyLoading ? "Signing challenge..." : "Verify ownership"}
+                      </button>
+                      <p className="text-[11px] font-sans text-slate-500">
+                        Proves key possession: approve the challenge in your wallet, then the app checks on-chain authorization. Typing an address alone never verifies.
+                      </p>
+                    </div>
+                  ) : (
+                    <p className="text-[11px] font-sans text-emerald-400">
+                      Ownership proven by challenge signature + on-chain authorization. Signing unlocked.
+                    </p>
+                  )}
+                  {verifyError && (
+                    <div className="text-[11px] font-sans text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50 w-full text-left">
+                      {verifyError}
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    onClick={onDisconnect}
+                    className="px-4 py-2 rounded-lg border border-slate-700 hover:bg-slate-800 text-slate-300 text-xs transition-colors font-sans"
+                  >
+                    Disconnect
+                  </button>
+                </div>
+              )}
               {/* Instructions banner */}
               <div className="w-full flex items-start gap-2.5 p-3 rounded-lg bg-cyan-950/30 border border-cyan-800/40 text-left text-xs font-sans text-cyan-200">
                 <Info className="w-4 h-4 shrink-0 mt-0.5 text-cyan-400" />
@@ -210,29 +315,30 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                 </div>
               </div>
 
-              {/* QR Code Canvas Frame — live session URI only, never a placeholder */}
+              {/* QR Code frame — fixed reserve so the modal never jumps when
+                  the code renders; caption row below (never overlaid). */}
               {effectiveUri ? (
                 <>
-                  <div className="relative p-4 rounded-xl border-2 border-dashed border-cyan-500/40 bg-[#05080f] shadow-inner flex flex-col items-center justify-center">
+                  <div className="relative p-5 rounded-xl border-2 border-dashed border-cyan-500/40 bg-[#05080f] shadow-inner flex flex-col items-center justify-center min-h-[280px] min-w-[264px]">
                     {qrDataUrl ? (
-                      <img
-                        src={qrDataUrl}
-                        alt="WalletConnect QR Code"
-                        className="w-56 h-56 rounded-lg shadow-md transition-transform hover:scale-102 duration-200"
-                      />
+                      <>
+                        <img
+                          src={qrDataUrl}
+                          alt="WalletConnect QR Code"
+                          className="w-56 h-56 rounded-lg shadow-md transition-transform hover:scale-102 duration-200"
+                        />
+                        <p className="mt-3 text-[11px] font-sans text-emerald-400">Live WC 2.0 session — scan within 60s</p>
+                      </>
                     ) : (
-                      <div className="w-56 h-56 flex items-center justify-center text-slate-500 text-xs">
+                      <div className="w-56 h-56 flex flex-col items-center justify-center text-slate-500 text-xs">
                         <RefreshCw className="w-6 h-6 animate-spin text-cyan-400 mb-2" />
                         Generating QR code...
                       </div>
                     )}
-                    <div className="absolute top-2 right-2">
-                      <StatusPill color="emerald" label="Live WC 2.0" dot />
-                    </div>
                   </div>
 
-                  {/* Copy URI button */}
-                  <div className="w-full flex gap-2">
+                  {/* Copy URI */}
+                  <div className="w-full flex gap-3">
                     <button
                       type="button"
                       onClick={handleCopyUri}
@@ -249,17 +355,6 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                           <span>Copy WalletConnect URI</span>
                         </>
                       )}
-                    </button>
-
-                    {/* Direct injected extension connect */}
-                    <button
-                      type="button"
-                      onClick={handleInjected}
-                      disabled={injectedLoading}
-                      className="flex items-center gap-1.5 px-4 py-2.5 rounded-lg border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/40 text-xs text-cyan-300 transition-all font-sans"
-                    >
-                      <ExternalLink className="w-3.5 h-3.5" />
-                      {injectedLoading ? "Connecting..." : "Use Browser Extension"}
                     </button>
                   </div>
                 </>
@@ -284,12 +379,6 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                     <RefreshCw className="w-3.5 h-3.5" />
                     Open WalletConnect
                   </button>
-                </div>
-              )}
-
-              {injectedError && (
-                <div className="text-[11px] text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50 w-full text-left">
-                  {injectedError}
                 </div>
               )}
             </div>
@@ -364,12 +453,43 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                 </p>
               </div>
 
+              <div className="space-y-1.5">
+                <label className="text-slate-300 font-medium">Node RPC Endpoint</label>
+                <input
+                  type="text"
+                  value={draftRpcUrl}
+                  onChange={(e) => setDraftRpcUrl(e.target.value)}
+                  className="w-full px-3 py-2 rounded-lg border border-[#1a2a3a] bg-[#05080f] font-mono text-xs text-cyan-300 focus:outline-none focus:border-cyan-500"
+                  placeholder="http://127.0.0.1:8545"
+                />
+                {rpcError && (
+                  <p className="text-[11px] text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50">
+                    {rpcError}
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveRpcUrl}
+                    className="px-4 py-2 rounded-lg border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/40 text-cyan-300 transition-all"
+                  >
+                    Save RPC URL
+                  </button>
+                  <span className="text-[11px] text-slate-500">
+                    Current: <code className="text-cyan-300">{rpcUrl}</code>
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  Point at the presenting machine (e.g. <code className="text-slate-400">http://192.168.x.x:8545</code>) when this laptop is not the chain host.
+                </p>
+              </div>
+
               <div className="p-3 rounded-lg bg-[#05080f] border border-[#1a2a3a] space-y-2 text-[11px]">
                 <div className="text-slate-300 font-medium font-sans">Network Configuration:</div>
                 <div className="grid grid-cols-2 gap-2 font-mono text-slate-400">
                   <div>Network: Hardhat Localhost</div>
                   <div>Chain ID: 31337</div>
-                  <div>RPC URL: http://127.0.0.1:8545</div>
+                  <div className="col-span-2">RPC URL: {rpcUrl}</div>
                   <div>Currency: ETH</div>
                 </div>
               </div>
@@ -377,9 +497,9 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
           )}
         </div>
 
-        {/* Modal Footer */}
+        {/* Modal Footer — status takes remaining width with full-text tooltip */}
         <div className="px-6 py-3 border-t border-[#1a2a3a] bg-[#05080f] flex items-center justify-between gap-4 text-xs text-slate-500 font-sans">
-          <span className="truncate">{statusMessage ?? "DeltaOTA Multi-Sig 2-of-3"}</span>
+          <span className="min-w-0 flex-1 truncate" title={statusMessage ?? "DeltaOTA Multi-Sig 2-of-3"}>{statusMessage ?? "DeltaOTA Multi-Sig 2-of-3"}</span>
           <button
             type="button"
             onClick={onClose}

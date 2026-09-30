@@ -42,10 +42,8 @@ export const DashboardScreen: React.FC = () => {
           <StatusPill color="emerald" label="Gateway Online" dot />
           <StatusPill color="cyan" label="Chain: 31337 (Local)" dot />
 
-          {/* Connected Wallet Badge / QR Modal Trigger.
-              Opens the overlay (status + dev-signer + config tabs). Real
-              pairing starts from step 4 or the overlay QR tab's retry button;
-              the overlay can no longer display a session it doesn't have. */}
+          {/* Connected Wallet Badge / modal trigger. Modal opens on the
+              extension-first tab; pairing starts there or via step 4. */}
           <button
             type="button"
             onClick={() => pipeline.wallet.openCustomQrModal()}
@@ -55,7 +53,7 @@ export const DashboardScreen: React.FC = () => {
             <span>
               {pipeline.wallet.isConnected && pipeline.wallet.address
                 ? truncateAddress(pipeline.wallet.address)
-                : "Connect Wallet (QR)"}
+                : "Connect Wallet"}
             </span>
             {pipeline.wallet.isConnected && (
               <span className="w-2 h-2 rounded-full bg-emerald-400" />
@@ -140,7 +138,11 @@ export const DashboardScreen: React.FC = () => {
               <WorkflowStepButton
                 stepNumber={4}
                 label="Connect Wallet"
-                subLabel="MetaMask / QR"
+                subLabel={
+                  pipeline.walletConnected
+                    ? `Chain ${pipeline.wallet.chainId ?? "?"}`
+                    : "Phone QR"
+                }
                 icon={<Wallet className="w-3.5 h-3.5" />}
                 isCompleted={pipeline.walletConnected}
                 isLoading={pipeline.loadingStep === "wallet"}
@@ -151,12 +153,24 @@ export const DashboardScreen: React.FC = () => {
               <WorkflowStepButton
                 stepNumber={5}
                 label="Sign & Propose"
-                subLabel="DeltaOTA Multi-Sig"
+                subLabel={
+                  !pipeline.walletConnected
+                    ? "Connect a wallet first"
+                    : !pipeline.wallet.isVerified
+                      ? "Verify ownership first"
+                      : pipeline.wallet.chainId !== null && pipeline.wallet.chainId !== 31337
+                        ? `Wrong chain (${pipeline.wallet.chainId})`
+                        : "DeltaOTA Multi-Sig"
+                }
                 icon={<Users className="w-3.5 h-3.5" />}
                 isCompleted={pipeline.approvalRequested}
                 isLoading={pipeline.loadingStep === "approval"}
                 isActive={pipeline.walletConnected && !pipeline.approvalRequested}
-                isDisabled={!pipeline.walletConnected}
+                isDisabled={
+                  !pipeline.walletConnected ||
+                  !pipeline.wallet.isVerified ||
+                  (pipeline.wallet.chainId !== null && pipeline.wallet.chainId !== 31337)
+                }
                 isLast={true}
                 onClick={pipeline.handleRequestApproval}
               />
@@ -168,6 +182,8 @@ export const DashboardScreen: React.FC = () => {
             releases={pipeline.releases}
             onExecuteKillSwitch={pipeline.handleExecuteKillSwitch}
             onApproveUpdate={pipeline.handleApproveUpdate}
+            proposerByVersion={pipeline.proposers}
+            connectedAddress={pipeline.wallet.address}
           />
 
           {/* Terminal Execution Window */}
@@ -185,10 +201,15 @@ export const DashboardScreen: React.FC = () => {
         onClose={pipeline.wallet.closeCustomQrModal}
         connectionUri={pipeline.wallet.connectionUri}
         connectedAddress={pipeline.wallet.address}
+        connectedChainId={pipeline.wallet.chainId}
+        isVerified={pipeline.wallet.isVerified}
+        onVerifyIdentity={() => pipeline.wallet.verifyIdentity()}
         onSelectDevAccount={pipeline.wallet.connectDevAccount}
-        onConnectInjected={pipeline.wallet.connectInjected}
+        onDisconnect={pipeline.wallet.disconnect}
         contractAddress={pipeline.wallet.contractAddress}
         onUpdateContractAddress={pipeline.wallet.updateContractAddress}
+        rpcUrl={pipeline.wallet.rpcUrl}
+        onUpdateRpcUrl={pipeline.wallet.updateRpcUrl}
         onOpenWalletConnect={() => void pipeline.wallet.openWalletModal()}
         statusMessage={pipeline.wallet.statusMessage}
       />
