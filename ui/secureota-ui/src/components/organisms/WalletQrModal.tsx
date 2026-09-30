@@ -13,8 +13,14 @@ import {
   RefreshCw,
 } from "lucide-react";
 import { HARDHAT_AUTHORIZED_DEVS } from "../../contracts/deltaOta";
+import { isValidEthereumAddress } from "../../lib/web3Payloads";
 import { StatusPill } from "../atoms/StatusPill";
 import { DevSignerCard } from "../molecules/DevSignerCard";
+
+// P0-4: packaged app is always a prod build — dev signers only in dev.
+const isDevBuild =
+  (import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env?.DEV ===
+  true;
 
 export interface WalletQrModalProps {
   isOpen: boolean;
@@ -46,6 +52,13 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   const [activeTab, setActiveTab] = useState<"qr" | "hardhat" | "config">("qr");
   const [injectedLoading, setInjectedLoading] = useState<boolean>(false);
   const [injectedError, setInjectedError] = useState<string | null>(null);
+  // P0-3: draft + explicit save so garbage is rejected loudly, never persisted.
+  const [draftAddress, setDraftAddress] = useState<string>(contractAddress);
+  const [addressError, setAddressError] = useState<string | null>(null);
+
+  // P0-4: production has no dev tab — force back to QR if it was selected.
+  const effectiveTab = !isDevBuild && activeTab === "hardhat" ? "qr" : activeTab;
+  const draftValid = isValidEthereumAddress(draftAddress.trim());
 
   // A QR is rendered ONLY from a live session URI. There is deliberately no
   // fallback URI: a fabricated code pairs with nothing and hangs both ends.
@@ -68,6 +81,30 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
       .then((url: string) => setQrDataUrl(url))
       .catch((err: unknown) => console.error("QR Code Generation Error:", err));
   }, [isOpen, effectiveUri]);
+
+  useEffect(() => {
+    if (isOpen) {
+      setDraftAddress(contractAddress);
+      setAddressError(null);
+    }
+  }, [isOpen, contractAddress]);
+
+  const handleSaveAddress = () => {
+    const clean = draftAddress.trim();
+    if (!clean || !isValidEthereumAddress(clean)) {
+      setAddressError(
+        `Invalid address — expected 0x + 40 hex chars. Got "${draftAddress}". Nothing saved.`
+      );
+      return;
+    }
+    // P0-3: confirm dialog shows the full address before persisting.
+    const ok = window.confirm(
+      `Save contract address?\n\n${clean}\n\nAll propose/approve/revoke calls will target this address.`
+    );
+    if (!ok) return;
+    setAddressError(null);
+    onUpdateContractAddress(clean);
+  };
 
   if (!isOpen) return null;
 
@@ -125,7 +162,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             type="button"
             onClick={() => setActiveTab("qr")}
             className={`flex items-center gap-2 py-3 px-4 border-b-2 font-medium transition-colors ${
-              activeTab === "qr"
+              effectiveTab === "qr"
                 ? "border-cyan-400 text-cyan-300"
                 : "border-transparent text-slate-400 hover:text-slate-200"
             }`}
@@ -133,11 +170,12 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             <Smartphone className="w-3.5 h-3.5" />
             Mobile MetaMask QR
           </button>
+          {isDevBuild && (
           <button
             type="button"
             onClick={() => setActiveTab("hardhat")}
             className={`flex items-center gap-2 py-3 px-4 border-b-2 font-medium transition-colors ${
-              activeTab === "hardhat"
+              effectiveTab === "hardhat"
                 ? "border-cyan-400 text-cyan-300"
                 : "border-transparent text-slate-400 hover:text-slate-200"
             }`}
@@ -145,11 +183,12 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             <Shield className="w-3.5 h-3.5" />
             Authorized Dev Signers
           </button>
+          )}
           <button
             type="button"
             onClick={() => setActiveTab("config")}
             className={`flex items-center gap-2 py-3 px-4 border-b-2 font-medium transition-colors ${
-              activeTab === "config"
+              effectiveTab === "config"
                 ? "border-cyan-400 text-cyan-300"
                 : "border-transparent text-slate-400 hover:text-slate-200"
             }`}
@@ -161,7 +200,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
 
         {/* Modal Body */}
         <div className="p-6 overflow-y-auto flex-1 space-y-4">
-          {activeTab === "qr" && (
+          {effectiveTab === "qr" && (
             <div className="flex flex-col items-center text-center space-y-4">
               {/* Instructions banner */}
               <div className="w-full flex items-start gap-2.5 p-3 rounded-lg bg-cyan-950/30 border border-cyan-800/40 text-left text-xs font-sans text-cyan-200">
@@ -235,7 +274,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                   <p className="text-[11px] text-slate-400 font-sans">
                     {statusMessage ||
                       "Start a real pairing session first — a QR appears here only for a live session."}{" "}
-                    Dev signers (next tab) need no session at all.
+                    {isDevBuild && "Dev signers (next tab) need no session at all."}
                   </p>
                   <button
                     type="button"
@@ -256,7 +295,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             </div>
           )}
 
-          {activeTab === "hardhat" && (
+          {effectiveTab === "hardhat" && isDevBuild && (
             <div className="space-y-4 text-xs">
               <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 text-slate-300 font-sans space-y-1">
                 <p className="font-semibold text-white">2-of-3 Multi-Sig Authorized Developer Signers</p>
@@ -283,17 +322,43 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             </div>
           )}
 
-          {activeTab === "config" && (
+          {effectiveTab === "config" && (
             <div className="space-y-4 text-xs font-sans">
               <div className="space-y-1.5">
                 <label className="text-slate-300 font-medium">Deployed DeltaOTA Contract Address</label>
                 <input
                   type="text"
-                  value={contractAddress}
-                  onChange={(e) => onUpdateContractAddress(e.target.value)}
-                  className="w-full px-3 py-2 rounded-lg border border-[#1a2a3a] bg-[#05080f] font-mono text-cyan-300 text-xs focus:outline-none focus:border-cyan-500"
+                  value={draftAddress}
+                  onChange={(e) => setDraftAddress(e.target.value)}
+                  className={`w-full px-3 py-2 rounded-lg border bg-[#05080f] font-mono text-xs focus:outline-none ${
+                    draftAddress.trim() && !draftValid
+                      ? "border-rose-500 text-rose-300"
+                      : "border-[#1a2a3a] text-cyan-300 focus:border-cyan-500"
+                  }`}
                   placeholder="0x445bd590A01fe6709d4f13A8F579c1e4846921db"
                 />
+                {draftAddress.trim() && !draftValid && (
+                  <p className="text-[11px] text-rose-400">
+                    Invalid address — expected 0x + 40 hex chars. Nothing is saved until valid.
+                  </p>
+                )}
+                {addressError && (
+                  <p className="text-[11px] text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50">
+                    {addressError}
+                  </p>
+                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={handleSaveAddress}
+                    className="px-4 py-2 rounded-lg border border-cyan-500/50 bg-cyan-950/40 hover:bg-cyan-900/40 text-cyan-300 transition-all"
+                  >
+                    Save address
+                  </button>
+                  <span className="text-[11px] text-slate-500">
+                    Current: <code className="text-cyan-300">{contractAddress}</code>
+                  </span>
+                </div>
                 <p className="text-[11px] text-slate-500">
                   Update this if you redeployed DeltaOTA to a new address using <code className="text-slate-400">npx hardhat run scripts/deploy.js</code>.
                 </p>

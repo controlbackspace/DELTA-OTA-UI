@@ -1,10 +1,11 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type { LogEntry } from "../../components/organisms/SystemsLogTerminal";
 import type { LedgerRelease } from "../../components/organisms/LedgerDeploymentsTable";
 import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
 import { isAcceptedFirmwareFile } from "../../lib/firmwareFiles";
 import { formatFileSize } from "../../lib/utils";
 import { useDesktopWallet } from "../wallet/useDesktopWallet";
+import type { OnChainReleaseRecord } from "../wallet/useDesktopWallet";
 import {
   formatVersionBytes32,
   formatGoldenHashBytes32,
@@ -16,10 +17,14 @@ export type BinaryKind = "base" | "target";
 
 const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
-// Demo escape hatch: when true, failed/offline contract calls still advance the
-// pipeline so the UI flow can be demonstrated without a live node.
-// Set to false to enforce honest failures (errors block step progression).
-const ALLOW_OFFLINE_PROGRESSION = true;
+// Honest-execution gate (P0-1): offline progression is OFF by default.
+// Enabled only in dev via explicit VITE_ALLOW_OFFLINE_PROGRESSION="true"
+// so failed/reverted txs block the pipeline in every real build.
+const ALLOW_OFFLINE_PROGRESSION =
+  (import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env?.DEV ===
+    true &&
+  (import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env
+    ?.VITE_ALLOW_OFFLINE_PROGRESSION === "true";
 
 export function useFirmwarePipeline() {
   const [updateState, setUpdateState] = useState<UpdateState>("idle");
@@ -102,6 +107,77 @@ export function useFirmwarePipeline() {
     // viewport pinned on stale content.
     setLogs((prev) => [...prev, { id: Date.now() + Math.random(), time, message, type }]);
   }, []);
+
+  // P0-5: proposer per version (receipt.from at propose time), lowercased.
+  const [proposers, setProposers] = useState<Record<string, string>>({});
+  // P0-2: chain-sync flag — local releases are a cache until first poll lands.
+  const [chainSynced, setChainSynced] = useState(false);
+  const releasesRef = useRef<LedgerRelease[]>([]);
+  releasesRef.current = releases;
+  const fetchReleaseRef = useRef(wallet.fetchRelease);
+  fetchReleaseRef.current = wallet.fetchRelease;
+
+  const mergeChainRecord = useCallback(
+    (version: string, rec: OnChainReleaseRecord) => {
+      const prev = releasesRef.current.find((r) => r.version === version);
+      if (
+        prev &&
+        (prev.approvalCount !== rec.approvalCount ||
+          prev.isLive !== rec.isLive ||
+          prev.isRevoked !== rec.isRevoked ||
+          (rec.goldenHash && prev.goldenHash !== rec.goldenHash))
+      ) {
+        if (rec.isRevoked && !prev.isRevoked) {
+          addLog(`[Chain] ${version} REVOKED on-chain — ledger synced (no clicks needed).`, "error");
+        } else if (rec.isLive && !prev.isLive) {
+          addLog(`[Chain] ${version} is now LIVE on-chain (${rec.approvalCount}/3) — ledger synced.`, "success");
+        } else {
+          addLog(`[Chain] ${version} synced: approvals ${rec.approvalCount}/3 live=${rec.isLive} revoked=${rec.isRevoked}.`, "info");
+        }
+      }
+      setReleases((prevList) =>
+        prevList.map((r) =>
+          r.version === version
+            ? {
+                ...r,
+                goldenHash: rec.goldenHash || r.goldenHash,
+                approvalCount: rec.approvalCount,
+                isLive: rec.isLive,
+                isRevoked: rec.isRevoked,
+              }
+            : r
+        )
+      );
+      setChainSynced(true);
+    },
+    [addLog]
+  );
+
+  // P0-2: chain as source of truth — 4s poll over direct RPC (works with or
+  // without a wallet session). On-chain revoke/approve/promote reflects
+  // within one interval without clicks.
+  useEffect(() => {
+    let cancelled = false;
+    const syncOnce = async () => {
+      const versions = releasesRef.current.map((r) => r.version);
+      for (const v of versions) {
+        try {
+          const rec = await fetchReleaseRef.current(v);
+          if (cancelled || !rec) continue;
+          mergeChainRecord(v, rec);
+        } catch {
+          // Poll failures keep the last cache; staleness is visible via
+          // chainSynced staying false / logs, never fake-live data.
+        }
+      }
+    };
+    void syncOnce();
+    const id = window.setInterval(() => void syncOnce(), 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [mergeChainRecord, wallet.contractAddress]);
 
   const handleLoadBinaries = async () => {
     // No fake staging: real binaries enter only via the sidebar dropzones.
@@ -261,6 +337,11 @@ export function useFirmwarePipeline() {
         addLog(`[Blockchain] Tx Mined: ${receipt.hash.slice(0, 20)}... in block #${receipt.blockNumber}`, "success");
         addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", receipt.origin === "dev-node" ? "warning" : "success");
         addLog("[Multi-Sig] Signature 1 of 2 (2-of-3 multisig) anchored on-chain! Awaiting second dev approval.", "success");
+        // P0-5: record proposer for the distinct-signer guard.
+        if (receipt.from) {
+          const proposerAddr = receipt.from.toLowerCase();
+          setProposers((prev) => ({ ...prev, [targetVersion.toLowerCase()]: proposerAddr }));
+        }
       } else {
         // Fallback simulation if no active live node
         addLog("[Smart Contract] Signer prompt dispatched. Broadcasting to DeltaOTA...", "info");
@@ -290,12 +371,21 @@ export function useFirmwarePipeline() {
       });
 
       setApprovalRequested(true);
+      // P0-2: post-tx refresh — replace the optimistic cache row with chain truth.
+      try {
+        const rec = await wallet.fetchRelease(targetVersion);
+        if (rec) mergeChainRecord(targetVersion, rec);
+      } catch {
+        // Poll loop will converge on next interval.
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Contract call failed";
       addLog(`[Smart Contract Error] ${msg}`, "error");
       if (ALLOW_OFFLINE_PROGRESSION) {
         // Still allow step progression in local testing
         setApprovalRequested(true);
+      } else {
+        addLog("[Governance] Progression BLOCKED — proposal failed on-chain; no offline advance.", "error");
       }
     } finally {
       setLoadingStep(null);
@@ -324,6 +414,13 @@ export function useFirmwarePipeline() {
       setReleases((prev) =>
         prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
       );
+      // P0-2: confirm against chain truth immediately.
+      try {
+        const rec = await wallet.fetchRelease(version);
+        if (rec) mergeChainRecord(version, rec);
+      } catch {
+        // Poll loop converges next interval.
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Revoke failed";
       addLog(`[Kill Switch Error] ${msg}`, "error");
@@ -331,6 +428,8 @@ export function useFirmwarePipeline() {
         setReleases((prev) =>
           prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
         );
+      } else {
+        addLog("[Governance] Revoke BLOCKED — on-chain revert; ledger unchanged (chain is truth).", "error");
       }
     }
   };
@@ -342,6 +441,16 @@ export function useFirmwarePipeline() {
   const handleApproveUpdate = async (version: string) => {
     addLog(`[Governance] Signing 2-of-3 threshold approval for ${version}...`, "info");
     addLog(`[Payload Formatter] Formatting approveRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
+
+    // P0-5: proposer≠approver pre-flight — distinct dev keys required.
+    // hasSigned(version, proposer) is already true; a self-approve would waste
+    // gas and fake quorum, so refuse before any wallet prompt.
+    const proposer = proposers[version.toLowerCase()];
+    const me = (wallet.address || "").toLowerCase();
+    if (proposer && me && proposer === me) {
+      addLog(`[Governance Rejection] 2-of-3 multi-sig requires distinct dev keys. Proposer (${truncateAddress(wallet.address || "")}) cannot approve their own release — hasSigned(version, proposer) is already true. Switch to a different authorized dev and retry.`, "error");
+      return;
+    }
 
     try {
       if (wallet.isConnected) {
@@ -360,8 +469,24 @@ export function useFirmwarePipeline() {
             : r
         )
       );
-      addLog(`[Smart Contract] THRESHOLD REACHED (2/3): ${version} is now LIVE on-chain!`, "success");
-      addLog("[Edge Gateway] ReleasePromotedToLive event captured. Distribution unlocked.", "success");
+      // P0-2: replace optimistic row with chain truth; only claim LIVE if chain agrees.
+      try {
+        const rec = await wallet.fetchRelease(version);
+        if (rec) {
+          mergeChainRecord(version, rec);
+          if (rec.isLive) {
+            addLog(`[Smart Contract] THRESHOLD REACHED (2/3): ${version} is now LIVE on-chain!`, "success");
+            addLog("[Edge Gateway] ReleasePromotedToLive event captured. Distribution unlocked.", "success");
+          } else if (!rec.isRevoked) {
+            addLog(`[Governance] Approval recorded on-chain (${rec.approvalCount}/3) — awaiting threshold for LIVE.`, "warning");
+          }
+        } else {
+          addLog(`[Smart Contract] THRESHOLD REACHED (2/3): ${version} is now LIVE on-chain!`, "success");
+          addLog("[Edge Gateway] ReleasePromotedToLive event captured. Distribution unlocked.", "success");
+        }
+      } catch {
+        // Poll loop converges next interval.
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : "Approval failed";
       addLog(`[Approve Error] ${msg}`, "error");
@@ -374,6 +499,8 @@ export function useFirmwarePipeline() {
               : r
           )
         );
+      } else {
+        addLog("[Governance] Approval BLOCKED — on-chain revert; awaiting a valid distinct-signer approval.", "error");
       }
     }
   };
@@ -422,6 +549,7 @@ export function useFirmwarePipeline() {
     deltaSizeKb,
     compressionRatio,
     wallet,
+    chainSynced,
     handleLoadBinaries,
     handleLoadBinaryFile,
     handleGenerateDelta,
