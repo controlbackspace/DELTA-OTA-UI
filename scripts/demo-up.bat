@@ -1,13 +1,17 @@
 @echo off
-REM DeltaOTA one-click demo bring-up (chain + artifacts + tunnel + app).
-REM Cold laptop to running app in one double-click. Leaves five windows open:
-REM   DeltaOTA-Node, DeltaOTA-Deploy, DeltaOTA-Artifacts, DeltaOTA-Tunnel, DeltaOTA-App.
+REM DeltaOTA one-click demo bring-up (chain + artifacts + RPC guard + tunnel + app).
+REM Cold laptop to running app in one double-click. Leaves these windows open:
+REM   DeltaOTA-Node, DeltaOTA-Deploy, DeltaOTA-Artifacts, DeltaOTA-RpcGuard,
+REM   DeltaOTA-App (+ DeltaOTA-Tunnel only on the cloudflared fallback).
 REM Fresh chain every run: killing the node wipes state, so redeploy happens here.
 REM Companion: demo-down.bat closes all five windows.
 REM Usage: demo-up.bat [--skip-build]
 REM   --skip-build  reuse the last desktop build (skip npm run build:app).
-REM Always starts the cloudflared tunnel: WalletConnect phone signing needs a
-REM public RPC for the node, so a tunnel-less bring-up is phone-incompatible.
+REM Phone RPC: MetaMask Mobile needs a public HTTPS RPC. The tunnel exposes the
+REM RPC guard (gateway\rpc_guard.py, :8546), never the node itself - Hardhat's
+REM dev accounts are unlocked. Preferred: Tailscale Funnel = FIXED URL
+REM (https://<laptop>.<tailnet>.ts.net, set once in MetaMask). Fallback when
+REM Tailscale is not installed: cloudflared quick tunnel (new URL every run).
 setlocal EnableDelayedExpansion
 cd /d "%~dp0.."
 set ROOT=%CD%
@@ -30,8 +34,15 @@ where node >nul 2>nul
 if errorlevel 1 (echo [FAIL] node not found on PATH. Install Node.js LTS first. & goto :fail)
 where python >nul 2>nul
 if errorlevel 1 (echo [FAIL] python not found on PATH. Install Python 3.12+ first. & goto :fail)
-where cloudflared >nul 2>nul
-if errorlevel 1 (echo [FAIL] cloudflared not found on PATH. Install cloudflared and retry. & goto :fail)
+set TUNNEL_MODE=
+where tailscale >nul 2>nul
+if not errorlevel 1 set TUNNEL_MODE=tailscale
+if not defined TUNNEL_MODE (
+  where cloudflared >nul 2>nul
+  if not errorlevel 1 set TUNNEL_MODE=cloudflared
+)
+if not defined TUNNEL_MODE (echo [FAIL] Neither tailscale nor cloudflared found on PATH. See documentations\WALLET-NETWORK.md. & goto :fail)
+echo [Preflight] Phone tunnel: %TUNNEL_MODE%
 if not exist "%ROOT%\blockchain\package.json" (echo [FAIL] blockchain\package.json missing. Run from a full repo clone. & goto :fail)
 if not exist "%ROOT%\desktop\package.json" (echo [FAIL] desktop\package.json missing. Run from a full repo clone. & goto :fail)
 if not exist "%ROOT%\desktop\node_modules" (echo [FAIL] desktop\node_modules missing. Run setup.ps1 first. & goto :fail)
@@ -62,12 +73,34 @@ powershell -NoProfile -Command "$d=(Get-Date).AddSeconds(30); while ((Get-Date) 
 if errorlevel 1 (echo [FAIL] Artifact server did not answer within 30s. Read the DeltaOTA-Artifacts window. & goto :fail)
 echo [3/6] Artifact server is up.
 
-echo [4/6] Starting cloudflared tunnel for :8545 (window: DeltaOTA-Tunnel)...
-start "DeltaOTA-Tunnel" cmd /k "cd /d %ROOT% && cloudflared tunnel --url http://127.0.0.1:8545 --logfile %ENVDIR%\tunnel.log"
+echo [4/6] Starting RPC guard :8546 -^> node :8545 (window: DeltaOTA-RpcGuard)...
+start "DeltaOTA-RpcGuard" cmd /k "cd /d %ROOT%\gateway && python rpc_guard.py --port 8546"
+powershell -NoProfile -Command "$d=(Get-Date).AddSeconds(30); while ((Get-Date) -lt $d) { try { $r=Invoke-RestMethod -Uri http://127.0.0.1:8546 -Method POST -Body '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}' -ContentType 'application/json' -TimeoutSec 2; if ($r.result -eq '0x7a69') { exit 0 } } catch { }; Start-Sleep -Seconds 2 }; exit 1"
+if errorlevel 1 (echo [FAIL] RPC guard did not answer chain 31337 within 30s. Read the DeltaOTA-RpcGuard window. & goto :fail)
+echo [4/6] RPC guard is up.
+if /i "%TUNNEL_MODE%"=="tailscale" goto :tunnel_tailscale
+
+echo [4/6] Starting cloudflared quick tunnel for :8546 (window: DeltaOTA-Tunnel; URL changes every run)...
+start "DeltaOTA-Tunnel" cmd /k "cd /d %ROOT% && cloudflared tunnel --url http://127.0.0.1:8546 --logfile %ENVDIR%\tunnel.log"
 echo [4/6] Waiting for tunnel URL (90s)...
 powershell -NoProfile -Command "$d=(Get-Date).AddSeconds(90); while ((Get-Date) -lt $d) { if (Test-Path '%ENVDIR%\tunnel.log') { $t=Get-Content '%ENVDIR%\tunnel.log' -Raw; if ($t -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') { $Matches[0] | Out-File -LiteralPath '%ENVDIR%\tunnel-url.txt' -NoNewline -Encoding ascii; exit 0 } }; Start-Sleep -Seconds 2 }; exit 1"
 if errorlevel 1 (echo [FAIL] No tunnel URL within 90s. Read the DeltaOTA-Tunnel window. & goto :fail)
+goto :tunnel_ready
+
+:tunnel_tailscale
+echo [4/6] Publishing the RPC guard with Tailscale Funnel (fixed URL)...
+REM Bounded: on a tailnet where Funnel was never enabled, the command waits for
+REM a browser approval - do that once by hand (see WALLET-NETWORK.md).
+powershell -NoProfile -Command "$p=Start-Process tailscale -ArgumentList 'funnel','--bg','8546' -NoNewWindow -PassThru -RedirectStandardOutput '%ENVDIR%\tunnel.log' -RedirectStandardError '%ENVDIR%\tunnel.err'; if (-not $p.WaitForExit(30000)) { $p.Kill(); exit 2 }; exit $p.ExitCode"
+if errorlevel 1 (type "%ENVDIR%\tunnel.log" "%ENVDIR%\tunnel.err" 2>nul & echo [FAIL] tailscale funnel failed. Run "tailscale funnel --bg 8546" once by hand to enable Funnel, then retry. & goto :fail)
+powershell -NoProfile -Command "$n=(tailscale status --json | ConvertFrom-Json).Self.DNSName.TrimEnd('.'); if (-not $n) { exit 1 }; ('https://' + $n) | Out-File -LiteralPath '%ENVDIR%\tunnel-url.txt' -NoNewline -Encoding ascii"
+if errorlevel 1 (echo [FAIL] Could not read this machine's Tailscale DNS name. Is "tailscale up" done? & goto :fail)
+
+:tunnel_ready
 set /p TUNNEL=<"%ENVDIR%\tunnel-url.txt"
+echo [4/6] Phone RPC: %TUNNEL%  - verifying chain 31337 over the public URL (60s)...
+powershell -NoProfile -Command "$d=(Get-Date).AddSeconds(60); while ((Get-Date) -lt $d) { try { $r=Invoke-RestMethod -Uri '%TUNNEL%' -Method POST -Body '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}' -ContentType 'application/json' -TimeoutSec 5; if ($r.result -eq '0x7a69') { exit 0 } } catch { }; Start-Sleep -Seconds 3 }; exit 1"
+if errorlevel 1 (echo [WARN] %TUNNEL% did not answer yet - the phone may not reach the chain. First Funnel use can take a minute for DNS/TLS.) else (echo [4/6] Public RPC verified: chain 31337.)
 
 echo [5/6] Building desktop app...
 if defined SKIP_BUILD echo [5/6] Skipped -- --skip-build passed, reusing last build in desktop\dist.
@@ -97,12 +130,12 @@ echo ===============================================================
 echo  Contract : %CONTRACT%
 echo  LAN IP   : %LANIP%
 echo  Artifacts: http://%LANIP%:8000/  (serves gateway\artifacts)
-echo  Tunnel   : %TUNNEL%  (phone MetaMask custom network RPC, chain 31337)
+echo  Phone RPC: %TUNNEL%  (%TUNNEL_MODE%; MetaMask custom network, chain 31337)
 echo  App      : opening in the DeltaOTA-App window
 echo ---------------------------------------------------------------
 echo  Next (judgment steps, NOT automated):
 echo   1. App Config tab: contract = %CONTRACT%, Node RPC = local (Phone RPC is pre-filled with the tunnel)
-echo   2. Phone MetaMask: if chain 31337 already exists, set its RPC to %TUNNEL% (the app only adds it when missing)
+echo   2. Phone MetaMask: chain 31337 RPC must be %TUNNEL% (Tailscale: set once, it never changes)
 echo   3. Console steps 1-5: the patch URL comes from step 3; the gateway serves whichever release goes live
 echo   4. demo-down.bat wipes the chain and closes all windows when done (fresh node next run)
 echo ===============================================================
