@@ -9,6 +9,9 @@ Keys:
   DELTA_RPC_URL ............ node endpoint (default localhost).
   DELTA_BIND_ADDR .......... CoAP bind (default: auto LAN IP at boot).
   SIM_LEDGER ............... "1" = simulated ledger rehearsal mode.
+  DELTA_OTA_KEY ............ 128-bit AES-CCM OTA key, 32 hex chars. SECRET:
+                             written only by provision_device.py --generate,
+                             never printed (callers show a fingerprint).
 
 File: %APPDATA%\\DeltaOTA\\gateway.json on Windows,
       ~/.config/deltaota/gateway.json elsewhere. Stdlib only.
@@ -24,6 +27,7 @@ KEYS = (
     "DELTA_RPC_URL",
     "DELTA_BIND_ADDR",
     "SIM_LEDGER",
+    "DELTA_OTA_KEY",
 )
 
 DEFAULTS = {
@@ -31,6 +35,7 @@ DEFAULTS = {
     "DELTA_RPC_URL": "http://127.0.0.1:8545",
     "DELTA_BIND_ADDR": "",
     "SIM_LEDGER": "",
+    "DELTA_OTA_KEY": "",
 }
 
 

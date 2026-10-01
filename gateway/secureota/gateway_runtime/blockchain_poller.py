@@ -64,6 +64,18 @@ class BlockchainPoller:
                     ],
                     "stateMutability": "view",
                     "type": "function"
+        },
+        {
+            # Emitted once per release when the 2-of-3 threshold is reached:
+            # the gateway follows the newest one instead of a hardcoded tag.
+            "anonymous": False,
+            "inputs": [
+                { "indexed": False, "internalType": "bytes32", "name": "version", "type": "bytes32" },
+                { "indexed": False, "internalType": "bytes32", "name": "goldenHash", "type": "bytes32" },
+                { "indexed": False, "internalType": "string", "name": "ipfsUrl", "type": "string" }
+                ],
+                    "name": "ReleasePromotedToLive",
+                    "type": "event"
         }
         ]
         
@@ -85,6 +97,26 @@ class BlockchainPoller:
             )
         else:
             self.contract = None
+
+    async def fetch_latest_live_version(self):
+        """Version of the newest release promoted to live on this contract.
+
+        Returns "" when nothing has gone live yet (fresh chain), or None when
+        the ledger is unreachable (caller treats that as WAITING, not failure).
+        """
+        if not self.contract:
+            print("[Error] Gateway is not connected to the blockchain. Aborting poll.")
+            return None
+        try:
+            logs = await asyncio.to_thread(
+                self.contract.events.ReleasePromotedToLive.get_logs, from_block=0
+            )
+        except Exception as e:
+            print(f"[Ledger Error] Failed to read ReleasePromotedToLive events: {e}")
+            return None
+        if not logs:
+            return ""
+        return logs[-1]["args"]["version"].replace(b'\0', b'').decode('utf-8')
 
     async def fetch_firmware_release(self, version_tag: str):
         print(f"\n[Network] Polling ledger for firmware version: {version_tag}...")

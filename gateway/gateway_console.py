@@ -133,7 +133,8 @@ class Supervisor:
             except OSError:
                 tail = ""
             seen_bind = seen_bind or "Server active" in tail or "WARNING: bound" in tail
-            seen_poll = seen_poll or "Polling ledger" in tail or "SIM_LEDGER" in tail or "polling simulated" in tail
+            seen_poll = (seen_poll or "Polling ledger" in tail or "No live release" in tail
+                         or "SIM_LEDGER" in tail or "polling simulated" in tail)
             if seen_bind and seen_poll:
                 print("Healthy: CoAP bound and ledger polling. Gateway is UP.")
                 return True

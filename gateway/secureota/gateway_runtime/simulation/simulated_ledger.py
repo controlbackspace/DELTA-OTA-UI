@@ -5,6 +5,7 @@ gateway can be exercised without a Hardhat node. `run_simulation.py` toggles
 the module-level `LEDGER_*` knobs between phases to drive each scenario.
 """
 import hashlib
+import os
 from pathlib import Path
 
 # artifacts/ lives three levels up from this file:
@@ -34,6 +35,12 @@ class DemoBlockchainPoller:
     Returns the same release dict shape that main_gateway.py and
     security_engine.py expect, but sourced from the LEDGER_* knobs above.
     """
+
+    async def fetch_latest_live_version(self):
+        """Mirror of the production poller: the simulated chain always has
+        one release (SIM_TARGET_VERSION, default v1.1); the LEDGER_* knobs
+        decide whether it is live or revoked."""
+        return os.environ.get("SIM_TARGET_VERSION", "v1.1")
 
     async def fetch_firmware_release(self, version_tag: str):
         print(f"[Ledger Bypass] Simulating on-chain state for {version_tag} "

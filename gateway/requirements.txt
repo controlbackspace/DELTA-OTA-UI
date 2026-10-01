@@ -2,3 +2,4 @@ bsdiff4==1.2.6
 web3
 aiocoap
 cryptography
+pyserial

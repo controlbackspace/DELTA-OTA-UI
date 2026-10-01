@@ -96,14 +96,14 @@ echo  DELTA-OTA DEMO IS UP
 echo ===============================================================
 echo  Contract : %CONTRACT%
 echo  LAN IP   : %LANIP%
-echo  Artifacts: http://%LANIP%:8000/patch_v1.2.bin
+echo  Artifacts: http://%LANIP%:8000/  (serves gateway\artifacts)
 echo  Tunnel   : %TUNNEL%  (phone MetaMask custom network RPC, chain 31337)
 echo  App      : opening in the DeltaOTA-App window
 echo ---------------------------------------------------------------
 echo  Next (judgment steps, NOT automated):
 echo   1. App Config tab: contract = %CONTRACT%, Node RPC = local (Phone RPC is pre-filled with the tunnel)
 echo   2. Phone MetaMask: if chain 31337 already exists, set its RPC to %TUNNEL% (the app only adds it when missing)
-echo   3. Propose with GOLDEN_HASH=(sha256 of patch) IPFS_URL=http://%LANIP%:8000/patch_v1.2.bin
+echo   3. Console steps 1-5: the patch URL comes from step 3; the gateway serves whichever release goes live
 echo   4. demo-down.bat wipes the chain and closes all windows when done (fresh node next run)
 echo ===============================================================
 

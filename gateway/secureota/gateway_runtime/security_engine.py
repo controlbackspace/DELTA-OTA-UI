@@ -27,9 +27,12 @@ class SecurityEngine:
         independent nonce||cipher||tag frame: block_<N>.bin in output_dir.
 
         Serves the ESP32 chunk protocol (main.cpp requestChunk): every block
-        independently auth-decodes on the device. Nonce = b"BLK" + 8-byte
-        big-endian block index + 2 zero bytes (13 bytes, unique per block
-        under one key). Returns the block count.
+        independently auth-decodes on the device. Nonce = 8 random bytes
+        drawn once per call (per release) + 5-byte big-endian block index
+        (13 bytes). The random prefix keeps nonces unique ACROSS releases
+        under the one long-lived key - a counter-only nonce would repeat
+        block N's nonce in every release, and CCM nonce reuse leaks the XOR
+        of the plaintexts. Returns the block count.
         """
         print("[Encryption] Slicing payload into block frames...")
         output_dir = Path(output_dir)
@@ -41,10 +44,11 @@ class SecurityEngine:
             raw_bytes = file.read()
 
         cipher = AESCCM(key)
+        release_prefix = os.urandom(8)
         count = 0
         for offset in range(0, len(raw_bytes), chunk_size):
             index = offset // chunk_size
-            nonce = b"BLK" + index.to_bytes(8, "big") + b"\x00\x00"
+            nonce = release_prefix + index.to_bytes(5, "big")
             frame = nonce + cipher.encrypt(nonce, raw_bytes[offset:offset + chunk_size], None)
             (output_dir / f"block_{index}.bin").write_bytes(frame)
             count += 1
