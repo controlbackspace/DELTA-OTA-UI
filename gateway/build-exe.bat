@@ -8,16 +8,23 @@ REM UDP 5683. Ship/copy the whole dist\DeltaOTA-Gateway folder.
 REM
 REM Needs the gateway venv (setup-gateway.bat). PyInstaller is installed on demand.
 setlocal
+REM Double-clicked from Explorer (cmd /c): keep the window open at the end so
+REM the result or error can be read. Set NOPAUSE=1 to disable (automation).
+set DBL=
+if not defined NOPAUSE echo %cmdcmdline% | findstr /i /c:" /c " >nul && set DBL=1
 cd /d "%~dp0"
 set PY=.venv\Scripts\python.exe
-if not exist "%PY%" (echo [FAIL] .venv missing - run setup-gateway.bat first. & exit /b 1)
-"%PY%" -m pip install -q -r requirements-build.txt || exit /b 1
+if not exist "%PY%" (echo [FAIL] .venv missing - run setup-gateway.bat first. & if defined DBL pause & exit /b 1)
+"%PY%" -m pip install -q -r requirements-build.txt
+if errorlevel 1 (echo [FAIL] pip install failed - see above. & if defined DBL pause & exit /b 1)
 "%PY%" -m PyInstaller --noconfirm --clean --onedir --console ^
   --name DeltaOTA-Gateway ^
   --paths secureota\gateway_runtime --paths . ^
   --collect-all aiocoap --collect-all web3 --collect-all eth_account ^
   --collect-submodules cryptography ^
-  gateway_console.py || exit /b 1
+  gateway_console.py
+if errorlevel 1 (echo [FAIL] PyInstaller failed - if it says Access is denied, close DeltaOTA-Gateway.exe first. & if defined DBL pause & exit /b 1)
 echo.
 echo [Build] dist\DeltaOTA-Gateway\DeltaOTA-Gateway.exe
 echo [Build] Config + key stay in %%APPDATA%%\DeltaOTA\gateway.json; artifacts go to dist\DeltaOTA-Gateway\artifacts.
+if defined DBL pause
