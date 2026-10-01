@@ -47,6 +47,13 @@ def config_path() -> Path:
     return base / "gateway.json"
 
 
+def status_path() -> Path:
+    """Where the gateway writes gateway_status.json and the artifact server
+    reads it: next to gateway.json, independent of any artifact directory."""
+    override = os.environ.get("DELTA_STATUS_FILE")
+    return Path(override) if override else config_path().parent / "gateway_status.json"
+
+
 def load_config() -> dict:
     """File values merged under live environment variables (env wins)."""
     try:

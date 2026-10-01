@@ -213,6 +213,7 @@ export const DashboardScreen: React.FC = () => {
             onApproveUpdate={pipeline.handleApproveUpdate}
             proposerByVersion={pipeline.proposers}
             connectedAddress={pipeline.wallet.address}
+            canRevoke={pipeline.wallet.isConnected && pipeline.wallet.chainAuthorized !== false}
           />
 
           {/* Terminal Execution Window */}

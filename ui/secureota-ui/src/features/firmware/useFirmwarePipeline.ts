@@ -543,11 +543,19 @@ export function useFirmwarePipeline() {
       addLog("[Identity] Verify wallet ownership first (Extension tab → Verify ownership). Revoke refused.", "error");
       return;
     }
+    if (!wallet.isConnected) {
+      addLog("[Kill Switch Error] Wallet not connected — connect an authorized developer wallet to revoke. Nothing was sent.", "error");
+      return;
+    }
+    if (wallet.chainAuthorized === false) {
+      addLog("[Governance] Connected wallet is NOT an authorized dev on this contract — revoke would revert. Switch wallet.", "error");
+      return;
+    }
     addLog(`[GOVERNANCE] KILL SWITCH TRIGGERED for ${version}...`, "warning");
     addLog(`[Payload Formatter] Formatting revokeRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
 
     try {
-      if (wallet.isConnected) {
+      {
         await withTimeout(
           new ethers.JsonRpcProvider(wallet.rpcUrl).getNetwork(),
           5000,
@@ -566,9 +574,7 @@ export function useFirmwarePipeline() {
         );
         addLog(`[Blockchain] Release revoked in block #${receipt.blockNumber} (tx: ${receipt.hash.slice(0, 16)}...)`, "error");
         addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", "warning");
-      } else {
-        await delay(800);
-        addLog(`[Smart Contract] Firmware ${version} revoked immutably on-chain.`, "error");
+        addLog(`[Kill Switch] ${version} revoked on-chain — the gateway destroys its artifacts on its next poll (≤5s) and devices get 4.01.`, "error");
       }
 
       setReleases((prev) =>
@@ -654,13 +660,11 @@ export function useFirmwarePipeline() {
           mergeChainRecord(version, rec);
           if (rec.isLive) {
             addLog(`[Smart Contract] THRESHOLD REACHED (2/3): ${version} is now LIVE on-chain!`, "success");
-            addLog("[Edge Gateway] ReleasePromotedToLive event captured. Distribution unlocked.", "success");
           } else if (!rec.isRevoked) {
             addLog(`[Governance] Approval recorded on-chain (${rec.approvalCount}/3) — awaiting threshold for LIVE.`, "warning");
           }
         } else {
           addLog(`[Smart Contract] THRESHOLD REACHED (2/3): ${version} is now LIVE on-chain!`, "success");
-          addLog("[Edge Gateway] ReleasePromotedToLive event captured. Distribution unlocked.", "success");
         }
       } catch {
         // Poll loop converges next interval.
@@ -717,7 +721,37 @@ export function useFirmwarePipeline() {
           ? "gateway"
           : "iot";
   const deviceBlock =
-    gatewayStaged && gs?.device_last_block != null ? gs.device_last_block + 1 : null;
+    gatewayStaged &&
+    gs?.device_last_block != null &&
+    (gs.staged_at == null || (gs.device_last_seen ?? 0) >= gs.staged_at)
+      ? gs.device_last_block + 1
+      : null;
+
+  // Mirror the gateway's own log lines (blocks served, device reports, kill
+  // switch, hash failures) into the terminal, once each. History present when
+  // the feed first appears is skipped: only what happens while we watch counts.
+  const lastEventId = useRef<number | null>(null);
+  useEffect(() => {
+    const events = gs?.events;
+    if (!gateway.online || !events) return;
+    const newest = events.length ? events[events.length - 1].id : (gs?.event_seq ?? 0);
+    if (lastEventId.current === null || newest < lastEventId.current) {
+      lastEventId.current = newest; // first sight, or the gateway restarted its counter
+      return;
+    }
+    const fresh = events.filter((e) => e.id > (lastEventId.current ?? 0));
+    if (fresh.length === 0) return;
+    lastEventId.current = newest;
+    for (const e of fresh) {
+      const low = e.msg.toLowerCase();
+      const type: LogEntry["type"] = /kill switch|mismatch|refused|failed/.test(low)
+        ? "error"
+        : /staged|reports firmware|final/.test(low)
+          ? "success"
+          : "info";
+      addLog(`[Gateway] ${e.msg}`, type);
+    }
+  }, [gs, gateway.online, addLog]);
 
   // Terminal narration of REAL transitions only (once per stage, progress in
   // 25% steps).
@@ -752,19 +786,7 @@ export function useFirmwarePipeline() {
         addLog(`[Tracker] Device ${gs?.device_reported_ip ?? ""} rebooted and reports ${deployVersion} — deployment confirmed end to end.`, "success");
       }
     }
-    if (updateState === "iot" && deviceBlock !== null && gs?.blocks_total) {
-      const pct = gs.device_final_sent
-        ? 100
-        : Math.floor((deviceBlock / gs.blocks_total) * 4) * 25;
-      if (pct > loggedPctRef.current) {
-        loggedPctRef.current = pct;
-        addLog(
-          `[Tracker] Device ${gs.device_ip ?? ""}: block ${deviceBlock}/${gs.blocks_total} (${pct}%)${gs.device_final_sent ? " — final block delivered; device commits and reboots, waiting for its version report" : ""}.`,
-          pct === 100 ? "success" : "info"
-        );
-      }
-    }
-  }, [isTracking, updateState, gateway.online, deviceBlock, trackRecord, gs, deployVersion, statusUrl, addLog]);
+  }, [isTracking, updateState, gateway.online, trackRecord, gs, deployVersion, statusUrl, addLog]);
 
   const toggleTracking = () => {
     if (isTracking) {

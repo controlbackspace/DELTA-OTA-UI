@@ -21,6 +21,9 @@ export interface LedgerDeploymentsTableProps {
   proposerByVersion?: Record<string, string>;
   /** Currently connected wallet (any case) — used for the proposer guard. */
   connectedAddress?: string | null;
+  /** Wallet connected AND not chain-verified as unauthorized. Any authorized
+   *  developer may revoke (the contract has no proposer/approver restriction). */
+  canRevoke?: boolean;
 }
 
 export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
@@ -29,6 +32,7 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
   onApproveUpdate,
   proposerByVersion = {},
   connectedAddress = null,
+  canRevoke = false,
 }) => {
   return (
     <div className="border-b border-[#1a2a3a] bg-[#060c18]">
@@ -119,11 +123,26 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
                         </button>
                       );
                     })()}
-                    {release.isLive && !release.isRevoked && (
+                    {!release.isRevoked && (
                       <button
                         type="button"
-                        onClick={() => onExecuteKillSwitch(release.version)}
-                        className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-rose-800/40 bg-rose-950/20 text-rose-400 hover:bg-rose-950/40 transition-all text-[10px]"
+                        disabled={!canRevoke}
+                        title={
+                          canRevoke
+                            ? `Revoke ${release.version} on-chain (any authorized developer).`
+                            : "Connect an authorized developer wallet to revoke."
+                        }
+                        onClick={() => {
+                          if (
+                            window.confirm(
+                              `Revoke ${release.version}?
+
+This is permanent on-chain: the gateway destroys the staged artifacts and devices are refused. A fix needs a new version.`
+                            )
+                          )
+                            onExecuteKillSwitch(release.version);
+                        }}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-rose-800/40 bg-rose-950/20 text-rose-400 hover:bg-rose-950/40 transition-all text-[10px] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-950/20"
                       >
                         <ShieldX className="w-3 h-3" />
                         Kill

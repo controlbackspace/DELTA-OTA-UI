@@ -18,15 +18,28 @@ Fields (all optional until first written):
                           ......... the version a device announced via /hello
   staged_at ............. epoch seconds when staged_version was staged
   updated_at ............ epoch seconds of the last write (heartbeat)
+  revoked_version ....... release the chain revoked while it was the newest
+                          (served to devices as 4.03 on /version)
+  events, event_seq ..... ring buffer of the last EVENT_LIMIT gateway log lines
+                          ({id, t, msg}); the console mirrors new ones into its
+                          terminal so the operator sees what the gateway sees
 """
 import json
 import os
 import time
 from pathlib import Path
 
-STATUS_FILE = Path(__file__).resolve().parent.parent.parent / "artifacts" / "gateway_status.json"
+from gateway_config import status_path
+
+# One fixed location (the per-user config dir), NOT the artifact dir: the exe,
+# the plain-Python gateway and a separately started serve_artifacts.py each
+# have a different artifact dir, and the feed was invisible whenever they
+# disagreed. DELTA_STATUS_FILE overrides it.
+STATUS_FILE = status_path()
 
 _state: dict = {}
+EVENT_LIMIT = 200
+_last_once: dict = {}
 
 
 def update(**fields) -> None:
@@ -36,12 +49,40 @@ def update(**fields) -> None:
     _state.update(fields)
     _state["updated_at"] = time.time()
     tmp = STATUS_FILE.with_name(STATUS_FILE.name + ".tmp")
-    try:
-        STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp.write_text(json.dumps(_state))
-        os.replace(tmp, STATUS_FILE)
-    except OSError as e:
-        print(f"[Status] Could not write {STATUS_FILE.name}: {e}")
+    payload = json.dumps(_state)
+    err = None
+    # Windows: os.replace fails while the artifact server has the file open for
+    # a read. That window is milliseconds, so retry briefly before giving up.
+    for _ in range(5):
+        try:
+            STATUS_FILE.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(payload)
+            os.replace(tmp, STATUS_FILE)
+            return
+        except OSError as e:
+            err = e
+            time.sleep(0.02)
+    print(f"[Status] Could not write {STATUS_FILE.name}: {err}")
+
+
+def event_once(key: str, msg: str, **fields) -> None:
+    """Like event(), but silent while `key` keeps the same message: loop
+    heartbeats ("still waiting") must not flood the console every 5 s. Fields
+    are always applied."""
+    if _last_once.get(key) == msg:
+        update(**fields)
+        return
+    _last_once[key] = msg
+    event(msg, **fields)
+
+
+def event(msg: str, **fields) -> None:
+    """Record one human-readable gateway event (and any status fields) in the
+    status file's ring buffer."""
+    seq = int(_state.get("event_seq", 0)) + 1
+    events = list(_state.get("events", []))[-(EVENT_LIMIT - 1):]
+    events.append({"id": seq, "t": time.time(), "msg": msg})
+    update(events=events, event_seq=seq, **fields)
 
 
 def reset_device_progress() -> None:

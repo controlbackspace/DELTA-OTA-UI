@@ -8,8 +8,10 @@ from pathlib import Path
 
 import gateway_status
 
-ENCRYPTED_PATCH = Path(__file__).resolve().parent.parent.parent / "artifacts" / "encrypted_patch.bin"
-BLOCKS_DIR = Path(__file__).resolve().parent.parent.parent / "artifacts" / "blocks"
+# DELTA_ARTIFACT_DIR (set by the packaged exe) overrides the default gateway/artifacts.
+_ARTIFACTS = (Path(os.environ["DELTA_ARTIFACT_DIR"]) if os.environ.get("DELTA_ARTIFACT_DIR") else Path(__file__).resolve().parent.parent.parent / "artifacts")
+ENCRYPTED_PATCH = _ARTIFACTS / "encrypted_patch.bin"
+BLOCKS_DIR = _ARTIFACTS / "blocks"
 BLOCK_SIZE = 1024  # must match SLIDING_WINDOW_SIZE in ESP32 main.cpp
 
 
@@ -63,11 +65,6 @@ def _requested_block(request) -> int:
     return 0 if mid is None else mid
 
 
-# Status file writes during a transfer: first block, every Nth, and the final
-# one - enough for a live progress bar without rewriting JSON per block.
-STATUS_EVERY_N_BLOCKS = 16
-
-
 class FirmwareResource(resource.Resource):
     async def render_get(self, request):
         print("[CoAP] Firmware requested by device.")
@@ -80,6 +77,7 @@ class FirmwareResource(resource.Resource):
             
         except FileNotFoundError:
             print("[CoAP] Blocked: no verified firmware on disk. Device is not authorized (4.01).")
+            gateway_status.event(f"Device {_device_ip(request)} requested /firmware - refused (4.01, nothing verified)")
             return aiocoap.Message(code=aiocoap.UNAUTHORIZED)
 
 
@@ -97,20 +95,26 @@ class PatchBlockResource(resource.Resource):
         blocks = _block_files()
         if not blocks:
             print("[CoAP] Block requested but no verified payload on disk (4.01).")
+            gateway_status.event(f"Device {_device_ip(request)} requested a block - refused (4.01, nothing staged)")
             return aiocoap.Message(code=aiocoap.UNAUTHORIZED)
 
         block = _requested_block(request)
         print(f"[CoAP] Block {block} requested by device.")
         if block < 0 or block >= len(blocks):
+            gateway_status.event(f"Device {_device_ip(request)} requested block {block} - out of range (4.04)")
             return aiocoap.Message(code=aiocoap.NOT_FOUND)
         payload = blocks[block].read_bytes()
         final = block == len(blocks) - 1
         # Tracker: real progress as seen by the gateway (reporting only).
-        if final or block == 0 or block % STATUS_EVERY_N_BLOCKS == 0:
-            gateway_status.update(device_ip=_device_ip(request),
-                                  device_last_block=block,
-                                  device_final_sent=final,
-                                  device_last_seen=time.time())
+        # Every block is recorded: a transfer is seconds long, and sparse
+        # writes (or one lost to a file lock) left the console blind to it.
+        ip = _device_ip(request)
+        note = f"Device {ip}: block {block + 1}/{len(blocks)} sent"
+        gateway_status.event(note + (" (final - device commits and reboots)" if final else ""),
+                             device_ip=ip,
+                             device_last_block=block,
+                             device_final_sent=final,
+                             device_last_seen=time.time())
         if final:
             return aiocoap.Message(payload=payload, code=aiocoap.CHANGED)
         return aiocoap.Message(payload=payload, code=aiocoap.CONTENT)
@@ -119,11 +123,23 @@ class PatchBlockResource(resource.Resource):
 class VersionResource(resource.Resource):
     """GET /version: the release whose block frames are being served, as
     plain text (2.05), or 4.01 when nothing is staged. The factory updater
-    asks this on every boot to decide whether to update ota_0."""
+    asks this on every boot to decide whether to update ota_0.
+
+    Kill switch: when the release the gateway follows was revoked on-chain,
+    answer 4.03 with the revoked version as the body. A device running that
+    version rolls back to its ota_1 backup (a 4.01 alone would leave an
+    already-installed bad release running forever)."""
     async def render_get(self, request):
         staged = gateway_status._state.get("staged_version")
         if not staged or not _block_files():
+            revoked = gateway_status._state.get("revoked_version")
+            if revoked and gateway_status._state.get("gateway_state") == "revoked":
+                ip = _device_ip(request)
+                gateway_status.event(f"Device {ip} told {revoked} is REVOKED (4.03) - it rolls back at boot")
+                return aiocoap.Message(code=aiocoap.FORBIDDEN, payload=str(revoked).encode("ascii"))
+            gateway_status.event(f"Device {_device_ip(request)} asked /version - nothing staged (4.01)")
             return aiocoap.Message(code=aiocoap.UNAUTHORIZED)
+        gateway_status.event(f"Device {_device_ip(request)} asked /version - staged {staged}")
         return aiocoap.Message(code=aiocoap.CONTENT, payload=str(staged).encode("ascii"))
 
 
@@ -139,9 +155,10 @@ class HelloResource(resource.Resource):
             return aiocoap.Message(code=aiocoap.BAD_REQUEST)
         ip = _device_ip(request)
         print(f"[CoAP] Device {ip} reports firmware {version}.")
-        gateway_status.update(device_reported_version=version,
-                              device_reported_ip=ip,
-                              device_reported_at=time.time())
+        gateway_status.event(f"Device {ip} reports firmware {version}",
+                             device_reported_version=version,
+                             device_reported_ip=ip,
+                             device_reported_at=time.time())
         # MUST stay payload-free: the firmware drops empty-body replies before
         # code handling; a 2.04 WITH a body would read as a final OTA block.
         return aiocoap.Message(code=aiocoap.CHANGED)

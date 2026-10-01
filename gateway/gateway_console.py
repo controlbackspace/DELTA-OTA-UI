@@ -17,9 +17,14 @@ import tempfile
 import time
 from pathlib import Path
 
+FROZEN = getattr(sys, "frozen", False)   # PyInstaller build (DeltaOTA-Gateway.exe)
 ROOT = Path(__file__).resolve().parent
 RUNTIME = ROOT / "secureota" / "gateway_runtime"
 sys.path.insert(0, str(RUNTIME))
+sys.path.insert(0, str(ROOT))
+# A frozen build keeps its working data (artifacts, state) next to the exe, not in
+# the temp bundle; the plain-Python run keeps using gateway/artifacts.
+APP_DIR = Path(sys.executable).resolve().parent if FROZEN else ROOT
 
 from gateway_config import (  # noqa: E402
     load_config,
@@ -31,6 +36,33 @@ from gateway_config import (  # noqa: E402
 LOCKFILE = Path(tempfile.gettempdir()) / "deltaota-console.lock"
 LOGFILE = Path(tempfile.gettempdir()) / "deltaota-demo" / "gateway.log"
 STARTUP_WAIT_S = 25
+
+
+if "--run-gateway" in sys.argv:
+    # Hidden child mode: the packaged exe re-launches itself to run the gateway
+    # (a bundled exe has no python.exe to hand "main_gateway.py" to).
+    import asyncio
+
+    for stream in (sys.stdout, sys.stderr):   # the console tails this output from a file
+        if stream is not None:
+            stream.reconfigure(line_buffering=True, write_through=True)
+
+    import threading
+
+    import main_gateway
+    import serve_artifacts
+
+    # The tracker reads http://<lan-ip>:8000/gateway_status.json; the exe has no
+    # separate serve_artifacts.py process, so serve it from inside the gateway child.
+    try:
+        threading.Thread(target=serve_artifacts.make_server().serve_forever, daemon=True).start()
+    except OSError as exc:   # e.g. a standalone serve_artifacts.py already owns :8000
+        print("[Artifacts] not started (%s) - assuming another server owns the port" % exc)
+
+    asyncio.run(main_gateway.main_loop())
+    raise SystemExit(0)
+
+from provision_device import configured_key, fingerprint, generate  # noqa: E402
 
 
 def clear() -> None:
@@ -111,12 +143,17 @@ class Supervisor:
             print("Gateway is already running (PID %s)." % self.proc.pid)
             return True
         LOGFILE.parent.mkdir(parents=True, exist_ok=True)
-        self.log_handle = open(LOGFILE, "ab", buffering=0)
+        self.log_handle = open(LOGFILE, "wb", buffering=0)  # fresh log per start: old errors must not look current
         env = dict(os.environ)
         env["PYTHONUNBUFFERED"] = "1"
+        if FROZEN:
+            cmd, cwd = [sys.executable, "--run-gateway"], APP_DIR
+            env.setdefault("DELTA_ARTIFACT_DIR", str(APP_DIR / "artifacts"))
+        else:
+            cmd, cwd = [sys.executable, "-u", "main_gateway.py"], RUNTIME
         self.proc = subprocess.Popen(
-            [sys.executable, "-u", "main_gateway.py"],
-            cwd=str(RUNTIME),
+            cmd,
+            cwd=str(cwd),
             stdout=self.log_handle,
             stderr=subprocess.STDOUT,
             env=env,
@@ -189,6 +226,8 @@ def show_status(sup: Supervisor) -> None:
     print("  RPC      : %s" % cfg["DELTA_RPC_URL"])
     print("  Bind     : %s" % (cfg["DELTA_BIND_ADDR"] or "(auto LAN IP)"))
     print("  Ledger   : %s" % ("SIMULATED (no chain)" if cfg["SIM_LEDGER"] == "1" else "LIVE chain"))
+    key = configured_key()
+    print("  OTA key  : %s" % (("fp=" + fingerprint(key)) if key else "MISSING - menu 9 to generate/import"))
     print("-" * 64)
 
 
@@ -249,20 +288,89 @@ def fresh_chain_flow(sup: Supervisor) -> None:
     edit_contract(sup)
 
 
-def acquire_lock() -> bool:
+def key_menu(sup: Supervisor) -> None:
+    key = configured_key()
+    print("OTA key: %s" % (("fingerprint " + fingerprint(key)) if key else "not set"))
+    print("  1 Generate new key   2 Import existing key (32 hex)   3 Reveal key   0 Back")
+    choice = input("> ").strip()
+    if choice == "1":
+        if key and input("A key exists. Replacing it breaks every provisioned device. "
+                         "Type REPLACE to continue: ").strip() != "REPLACE":
+            print("Kept the existing key.")
+            return
+        generate(force=True)
+    elif choice == "2":
+        raw = input("Paste the 32-hex key (empty = cancel): ").strip().lower()
+        if not raw:
+            return
+        try:
+            new = bytes.fromhex(raw)
+        except ValueError:
+            new = b""
+        if len(new) != 16:
+            print("REFUSED: expected exactly 32 hex characters. Nothing saved.")
+            return
+        save_config({"DELTA_OTA_KEY": new.hex()})
+        print("Saved. Key fingerprint %s." % fingerprint(new))
+    elif choice == "3":
+        if not key:
+            print("No key set.")
+        elif input("This prints the SECRET key on screen. Type SHOW to continue: ").strip() == "SHOW":
+            print("DELTA_OTA_KEY = %s   (fp=%s)" % (key.hex(), fingerprint(key)))
+            print("Paste it into the ESP32 reset tool, or into the Pi's gateway.json.")
+        return
+    else:
+        return
+    if sup.running():
+        print("Restarting the gateway to load the new key...")
+        sup.restart()
+
+
+def _pid_alive(pid: int) -> bool:
+    if sys.platform == "win32":
+        import ctypes
+
+        handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)  # QUERY_LIMITED_INFORMATION
+        if not handle:
+            return False
+        code = ctypes.c_ulong()
+        ok = ctypes.windll.kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return bool(ok) and code.value == 259  # STILL_ACTIVE
     try:
-        fd = os.open(str(LOCKFILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
+        os.kill(pid, 0)
         return True
-    except FileExistsError:
+    except OSError:
         return False
+
+
+def acquire_lock() -> bool:
+    for _ in range(2):
+        try:
+            fd = os.open(str(LOCKFILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                owner = int(LOCKFILE.read_text().strip())
+            except (OSError, ValueError):
+                owner = 0
+            if owner and _pid_alive(owner):
+                return False
+            try:                      # owner is gone (window closed / crash): stale lock
+                LOCKFILE.unlink()
+            except OSError:
+                return False
+    return False
 
 
 def main() -> int:
     if not acquire_lock():
         print("Another gateway console already holds the lock (%s)." % LOCKFILE)
         print("One supervisor per machine — use the running one.")
+        if FROZEN:
+            input("Press Enter to close...")
         return 1
     sup = Supervisor()
     try:
@@ -271,7 +379,8 @@ def main() -> int:
             show_status(sup)
             print("  1 Start gateway      2 Stop gateway       3 Restart")
             print("  4 Contract address   5 Node RPC URL       6 SIM/live toggle")
-            print("  7 Log tail           8 Fresh-chain flow   0 Exit (stops child)")
+            print("  7 Log tail           8 Fresh-chain flow   9 OTA key")
+            print("  0 Exit (stops child)")
             try:
                 choice = input("> ").strip()
             except (EOFError, KeyboardInterrupt):
@@ -292,6 +401,8 @@ def main() -> int:
                 sup.follow()
             elif choice == "8":
                 fresh_chain_flow(sup)
+            elif choice == "9":
+                key_menu(sup)
             elif choice == "0":
                 sup.stop()
                 print("Console exiting. Gateway stopped, port 5683 free.")

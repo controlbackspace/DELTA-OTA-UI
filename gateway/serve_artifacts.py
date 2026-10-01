@@ -13,12 +13,15 @@ import argparse
 import fnmatch
 import functools
 import http.server
+import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent / "secureota" / "gateway_runtime"))
 
 from secureota.release_builder.core import ARTIFACT_HTTP_PORT, gateway_lan_ip
+from gateway_config import status_path
 
 # The only files ever served: release delta patches by filename convention,
 # plus the gateway's live status (read by the console's deployment tracker;
@@ -57,6 +60,8 @@ class PatchOnlyHandler(http.server.SimpleHTTPRequestHandler):
         # Resolve against artifacts/ and reject anything escaping it (..).
         artifact_dir = Path(self.directory).resolve()
         rel = path.split("?", 1)[0].split("#", 1)[0].lstrip("/")
+        if Path(rel).name == STATUS_FILE_NAME:
+            return str(status_path())   # the gateway's live feed lives outside artifacts/
         candidate = (artifact_dir / rel).resolve()
         try:
             candidate.relative_to(artifact_dir)
@@ -80,19 +85,26 @@ class PatchOnlyHandler(http.server.SimpleHTTPRequestHandler):
         sys.stdout.write("[Artifacts] %s\n" % (args[1] if len(args) > 1 else args[0],))
 
 
+def make_server(port: int = ARTIFACT_HTTP_PORT) -> http.server.ThreadingHTTPServer:
+    # Same artifact dir the gateway writes gateway_status.json into (the packaged
+    # exe sets DELTA_ARTIFACT_DIR next to itself; plain Python uses gateway/artifacts).
+    env_dir = os.environ.get("DELTA_ARTIFACT_DIR")
+    artifact_dir = Path(env_dir) if env_dir else Path(__file__).resolve().parent / "artifacts"
+    artifact_dir.mkdir(parents=True, exist_ok=True)
+
+    handler = functools.partial(PatchOnlyHandler, directory=str(artifact_dir))
+    server = http.server.ThreadingHTTPServer(("0.0.0.0", port), handler)
+    print(f"[Artifacts] Serving {PATCH_GLOB} from {artifact_dir} at "
+          f"http://{gateway_lan_ip()}:{port}/ (Ctrl+C to stop)")
+    return server
+
+
 def main():
     parser = argparse.ArgumentParser(description="Serve delta patches over HTTP.")
     parser.add_argument("--port", type=int, default=ARTIFACT_HTTP_PORT)
     args = parser.parse_args()
 
-    artifact_dir = Path(__file__).resolve().parent / "artifacts"
-    artifact_dir.mkdir(exist_ok=True)
-
-    handler = functools.partial(PatchOnlyHandler, directory=str(artifact_dir))
-    server = http.server.ThreadingHTTPServer(("0.0.0.0", args.port), handler)
-
-    print(f"[Artifacts] Serving {PATCH_GLOB} from {artifact_dir} at "
-          f"http://{gateway_lan_ip()}:{args.port}/ (Ctrl+C to stop)")
+    server = make_server(args.port)
 
     try:
         server.serve_forever()

@@ -3,6 +3,8 @@ import hashlib
 import json
 import os
 import re
+import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -21,7 +23,8 @@ import gateway_status
 # below keeps its built-in default. Core logic untouched.
 apply_config()
 
-ARTIFACT_DIR = Path(__file__).resolve().parent.parent.parent / "artifacts"
+# DELTA_ARTIFACT_DIR (set by the packaged exe) overrides the default gateway/artifacts.
+ARTIFACT_DIR = (Path(os.environ["DELTA_ARTIFACT_DIR"]) if os.environ.get("DELTA_ARTIFACT_DIR") else Path(__file__).resolve().parent.parent.parent / "artifacts")
 DUMMY_PATCH = ARTIFACT_DIR / "dummy_patch.bin"
 ENCRYPTED_PATCH = ARTIFACT_DIR / "encrypted_patch.bin"
 STATE_FILE = ARTIFACT_DIR / "gateway_state.json"
@@ -120,6 +123,23 @@ def _clear_staged():
         for stale in ARTIFACT_DIR.glob(pattern):
             stale.unlink(missing_ok=True)
 
+def _start_artifact_server():
+    """Serve patches + the live status feed on :8000 from inside the gateway,
+    so the console's tracker works without a second process. The packaged exe
+    starts its own (see gateway_console.py); a standalone serve_artifacts.py
+    that already owns the port is left alone."""
+    if getattr(sys, "frozen", False) or os.environ.get("DELTA_NO_ARTIFACT_SERVER") == "1":
+        return
+    try:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+        import serve_artifacts
+        threading.Thread(target=serve_artifacts.make_server().serve_forever,
+                         daemon=True).start()
+    except OSError as exc:
+        print(f"[Artifacts] not started ({exc}) - assuming another server owns the port")
+    except ImportError as exc:
+        print(f"[Artifacts] not started ({exc})")
+
 ## Main Loop
 
 async def main_loop():
@@ -129,7 +149,7 @@ async def main_loop():
     # may; everything else needs the provisioned production key.
     if KEY_SOURCE in ("missing", "malformed") and not SIM_LEDGER:
         print(f"[Crypto] FATAL: production OTA key {KEY_SOURCE} (DELTA_OTA_KEY). "
-              f"Run: python provision_device.py --generate  (in gateway/). "
+              f"Run: python provision_device.py --generate  (in gateway/) or console menu 9. "
               f"Refusing to serve updates under the test key.")
         return
     if KEY_SOURCE == "configured":
@@ -150,6 +170,7 @@ async def main_loop():
     engine = SecurityEngine()
 
     await start_coap_server()
+    _start_artifact_server()
 
     # Bind self-check: a loopback bind means no default route, and the CoAP
     # server would be reachable from nothing (not even the ESP32). Say so
@@ -217,6 +238,7 @@ async def main_loop():
     # Pollers without event support (test doubles) keep the fixed default.
     fetch_latest = getattr(poller, "fetch_latest_live_version", None)
     revoked_handled: set[str] = set()   # versions whose kill switch already ran
+    revoked_announced: set[str] = set()  # versions already reported to the console
 
     while True:
         if fetch_latest is None:
@@ -226,17 +248,20 @@ async def main_loop():
             if target is None:
                 print("[Gateway] Ledger unreachable (node offline?). Waiting - "
                       "will retry next poll.")
-                gateway_status.update(gateway_state="unreachable")
+                gateway_status.event_once("state", "Ledger unreachable (node offline?) - waiting",
+                                          gateway_state="unreachable")
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
             if target == "":
                 print(f"[Gateway] No live release on contract {contract_id} yet. "
                       f"Waiting...")
-                gateway_status.update(gateway_state="waiting", target_version=None)
+                gateway_status.event_once("state", f"No live release on contract {contract_id} yet - waiting",
+                                          gateway_state="waiting", target_version=None)
                 await asyncio.sleep(POLL_INTERVAL)
                 continue
 
-        gateway_status.update(target_version=target)
+        gateway_status.event_once("target", f"Following {target} (newest live release on the chain)",
+                                  target_version=target)
         release_data = await poller.fetch_firmware_release(target)
 
         # Ledger unreachable (node offline, RPC error): this is WAITING, not
@@ -247,7 +272,8 @@ async def main_loop():
         if release_data is None:
             print("[Gateway] Ledger unreachable (node offline?). Waiting - "
                   "will retry next poll.")
-            gateway_status.update(gateway_state="unreachable")
+            gateway_status.event_once("state", "Ledger unreachable (node offline?) - waiting",
+                                      gateway_state="unreachable")
             await asyncio.sleep(POLL_INTERVAL)
             continue
 
@@ -267,12 +293,16 @@ async def main_loop():
                 print(f"[Gateway] Latest release {target} is revoked - waiting for a "
                       f"newer live release.")
             gateway_status.update(gateway_state="revoked", staged_version=None,
-                                  blocks_total=None)
+                                  blocks_total=None, revoked_version=target)
+            if target not in revoked_announced:
+                revoked_announced.add(target)
+                gateway_status.event(f"KILL SWITCH: {target} revoked on-chain - artifacts destroyed, devices refused (4.01)")
             await asyncio.sleep(POLL_INTERVAL)
             continue
 
         if release_data["isLive"] is True and release_data["version"] != installed_version:
             print(f"Success! New Update ({release_data['version']}) is Live.")
+            gateway_status.event(f"{release_data['version']} is live on-chain - downloading and verifying")
 
             # Payload source: an explicit DELTA_PAYLOAD file wins when set
             # (bench/test seam only). Otherwise the gateway DOWNLOADS the
@@ -294,7 +324,8 @@ async def main_loop():
                     print(f"[Network] SIM_LEDGER payload resolves to {source_url}.")
                 payload_bytes = await asyncio.to_thread(_download_patch, source_url)
                 if payload_bytes is None:
-                    gateway_status.update(gateway_state="download-failed")
+                    gateway_status.event(f"Download of {release_data['version']} failed - will retry",
+                                         gateway_state="download-failed")
                     await asyncio.sleep(POLL_INTERVAL)
                     continue
                 # Hash the DOWNLOADED bytes against the golden hash before
@@ -303,7 +334,8 @@ async def main_loop():
                 if hashlib.sha256(payload_bytes).hexdigest() != release_data["goldenHash"]:
                     print("[Security] FATAL: Downloaded bytes do not match golden hash. "
                           "Payload destroyed (never written).")
-                    gateway_status.update(gateway_state="hash-mismatch")
+                    gateway_status.event(f"{release_data['version']}: downloaded bytes do not match the on-chain golden hash - refused",
+                                         gateway_state="hash-mismatch")
                     await asyncio.sleep(POLL_INTERVAL)
                     continue
                 staged = ARTIFACT_DIR / f"dl_{_safe_tag(release_data['version'])}.bin"
@@ -314,6 +346,7 @@ async def main_loop():
 
             if isValid is True:
                 print("Verified! Moving to encryption!")
+                gateway_status.event(f"{release_data['version']}: golden hash verified - encrypting")
 
                 try:
                     engine.encrypt_payload(
@@ -342,7 +375,8 @@ async def main_loop():
                     ENCRYPTED_PATCH.unlink(missing_ok=True)
                     _clear_block_frames()
                     _clear_staged()
-                    gateway_status.update(gateway_state="invalid-payload",
+                    gateway_status.event(f"{release_data['version']}: payload is not a usable patch/image - not served",
+                                         gateway_state="invalid-payload",
                                           staged_version=None, blocks_total=None)
                     await asyncio.sleep(POLL_INTERVAL)
                     continue
@@ -350,6 +384,7 @@ async def main_loop():
                 dota_path.write_bytes(dota_bytes)
                 print(f"[Delta] Device stream: {Path(payload_path).stat().st_size} B payload -> "
                       f"{len(dota_bytes)} B DOTA.")
+                gateway_status.event(f"Device stream built: {len(dota_bytes)} B DOTA")
 
                 block_count = engine.encrypt_blocks(dota_path, BLOCKS_DIR, PRE_SHARED_KEY)
 
@@ -361,7 +396,9 @@ async def main_loop():
 
                 print(f"[System] Gateway state updated to {installed_version}")
                 gateway_status.reset_device_progress()
-                gateway_status.update(gateway_state="staged",
+                gateway_status.event(f"Staged {installed_version}: verified, encrypted, {block_count} blocks ready",
+                                      gateway_state="staged",
+                                      revoked_version=None,
                                       staged_version=installed_version,
                                       blocks_total=block_count,
                                       staged_at=time.time())
@@ -370,8 +407,9 @@ async def main_loop():
                 ENCRYPTED_PATCH.unlink(missing_ok=True)
                 _clear_block_frames()
                 _clear_staged()
-                gateway_status.update(gateway_state="hash-mismatch",
-                                      staged_version=None, blocks_total=None)
+                gateway_status.event(f"{release_data['version']}: integrity check failed - artifacts destroyed",
+                                     gateway_state="hash-mismatch",
+                                     staged_version=None, blocks_total=None)
                 await asyncio.sleep(POLL_INTERVAL)
         else:
 

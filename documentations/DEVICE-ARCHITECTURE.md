@@ -21,7 +21,7 @@ never remove the code that repairs it.
 
 ```
 reset ──► factory updater
-           ├─ no OTA key?           → wait for USB provisioning (first boot only)
+           ├─ no OTA key?           → store the key compiled in from secrets.h (first boot only)
            ├─ last install pending? → confirmed by app? clear it
            │                          not yet?  boot it again (max 3 tries)
            │                          3 tries?  restore ota_1 → ota_0, mark failed
@@ -50,6 +50,17 @@ reset ──► factory updater
    3 unconfirmed boots): restore ota_1 → ota_0 and record the version as
    `failed`. It is never retried automatically; stage a newer release.
 
+### Revoke (kill switch) on the device
+
+When the newest release is revoked on-chain the gateway destroys its blocks
+and answers `GET /version` with **4.03 + the revoked version**. The updater
+checks this at every boot: if the device runs that version it restores
+ota_1 (the previous application) into ota_0, records the version as `failed`
+(never reinstalled) and boots the old app, which reports itself via `/hello`.
+The app has no networking, so a running device picks the revoke up at its
+next reset or power cycle. Needs the updated factory image
+(`toolslash_device.bat factory COM3`).
+
 ## 4. Gateway side and the DOTA stream
 
 Releases stay **BSDIFF40** on-chain (the golden hash covers those exact
@@ -74,17 +85,27 @@ Gateway CoAP resources: `/patch?b=N` (blocks), `/version` (staged release or
 servers replay cached replies for a repeated (endpoint, ID) for about 4
 minutes, which would hand a rebooting device the previous release's blocks.
 
-## 5. Build, flash, provision (runbook)
+## 5. Build, flash, reset (runbook)
 
 ```bat
 cd Documents\PlatformIO\Projects\Thesis
 pio run                                   :: builds factory + apps; publishes release-images\app-v1.0.bin, app-v1.1.bin
 tools\flash_device.bat erase   COM3       :: clean chip (wipes the key too)
-tools\flash_device.bat factory COM3       :: updater -> factory, boot = factory
-:: close the serial monitor, then from DELTA-OTA-UI\gateway:
-python provision_device.py --port COM3    :: must report fp=<gateway fp> MATCHES
+tools\flash_device.bat factory COM3       :: updater -> factory, boot = factory (stores the key from secrets.h)
 tools\flash_device.bat app     COM3 v1.0  :: application -> ota_0 (byte-exact)
 ```
+
+There is no USB key handshake. `include\secrets.h` carries Wi-Fi, gateway IP
+and `DELTA_OTA_KEY_HEX` (the gateway's 32-hex key; template:
+`secrets.example.h`); the factory image writes that key to NVS on first boot
+and logs `Key loaded fp=<fp>`, which must match the gateway console's
+fingerprint. Moving the gateway to another machine (e.g. the Raspberry Pi)
+needs only the same key there (gateway console menu 9, or `gateway.json`).
+
+**Packaged tools:** `DeltaOTA-Gateway.exe` (gateway console, built with
+`gateway\build-exe.bat`) and `DeltaOTA-ESP32-Reset.exe` (built with
+`tools\build-exe.bat`; prompts for Wi-Fi, gateway IP and key, rewrites
+`secrets.h`, then does the full reset below).
 
 Release v1.1 from the console (files in `Projects\Thesis\release-images\`,
 with SHA-256 checksums in `SHA256SUMS.txt`):
@@ -109,12 +130,12 @@ runs now.
 | Situation | Command |
 |---|---|
 | Replay the demo after a successful update | `demo-down` / `demo-up` (fresh chain), then `tools\flash_device.bat app COM3 v1.0` |
-| A version was recorded as failed (the updater never retries it), or anything looks wrong | `tools\flash_device.bat reset COM3`: erase + factory + provision key + app v1.0 |
+| A version was recorded as failed (the updater never retries it), or anything looks wrong | `DeltaOTA-ESP32-Reset.exe` (or `tools\flash_device.bat reset COM3` with an existing `secrets.h`): erase + factory + key + app v1.0 |
 
 - **The light reset** rewrites only ota_0. The factory updater, key and
   health record stay, and the v1.0 app re-registers itself on its next boot.
-- **The full reset** wipes the whole chip. The key is re-sent from the
-  gateway config, so the fingerprint is unchanged.
+- **The full reset** wipes the whole chip. The key is re-installed from
+  `secrets.h`, so the fingerprint is unchanged as long as the key is.
 - **Always start a fresh chain before replaying.** Otherwise the updater
   pulls a release that is still live on the old chain as soon as it boots.
 
