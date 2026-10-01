@@ -16,6 +16,7 @@ import { HARDHAT_AUTHORIZED_DEVS } from "../../contracts/deltaOta";
 import { isValidEthereumAddress } from "../../lib/web3Payloads";
 import { StatusPill } from "../atoms/StatusPill";
 import { DevSignerCard } from "../molecules/DevSignerCard";
+import { isHttpsLoopback } from "../../features/wallet/useDesktopWallet";
 
 // P0-4: packaged app is always a prod build — dev signers only in dev.
 const isDevBuild =
@@ -153,6 +154,12 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
     if (!clean || !/^https?:\/\/[^/]+(:\d+)?$/.test(clean)) {
       setRpcError(
         `Invalid RPC URL — expected http(s)://host[:port]. Got "${draftRpcUrl}". Nothing saved.`
+      );
+      return;
+    }
+    if (isHttpsLoopback(clean)) {
+      setRpcError(
+        `The local Hardhat node speaks plain http — use http://${clean.slice("https://".length)}. The https tunnel URL belongs in Phone RPC below. Nothing saved.`
       );
       return;
     }

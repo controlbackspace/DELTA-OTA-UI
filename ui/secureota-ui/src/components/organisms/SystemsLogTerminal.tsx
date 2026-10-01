@@ -34,7 +34,7 @@ export const SystemLogsTerminal: React.FC<SystemLogsTerminalProps> = React.memo(
         <span className="text-[10px] text-slate-500 uppercase tracking-wider font-sans font-medium">
           System Execution Logs
         </span>
-        <span className="text-xs text-slate-700 font-mono">sepolia-testnet:11155111</span>
+        <span className="text-xs text-slate-700 font-mono">hardhat-local:31337</span>
 
         <div className="ml-auto flex items-center gap-3 font-sans">
           {isProcessing && (

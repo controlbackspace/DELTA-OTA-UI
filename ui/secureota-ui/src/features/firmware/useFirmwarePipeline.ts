@@ -6,6 +6,7 @@ import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
 import { isAcceptedFirmwareFile } from "../../lib/firmwareFiles";
 import { formatFileSize } from "../../lib/utils";
 import { useDesktopWallet } from "../wallet/useDesktopWallet";
+import { statusUrlFor, useGatewayStatus } from "../deployment/useGatewayStatus";
 import type { OnChainReleaseRecord } from "../wallet/useDesktopWallet";
 import {
   formatVersionBytes32,
@@ -78,7 +79,8 @@ const ALLOW_OFFLINE_PROGRESSION =
     ?.VITE_ALLOW_OFFLINE_PROGRESSION === "true";
 
 export function useFirmwarePipeline() {
-  const [updateState, setUpdateState] = useState<UpdateState>("idle");
+  // Live deployment tracker on/off (stages are derived, never timed).
+  const [isTracking, setIsTracking] = useState(false);
   const [firmwareVersion] = useState("v1.0");
 
   // Pipeline Step Flags
@@ -161,6 +163,10 @@ export function useFirmwarePipeline() {
   releasesRef.current = releases;
   const fetchReleaseRef = useRef(wallet.fetchRelease);
   fetchReleaseRef.current = wallet.fetchRelease;
+  const fetchProposerRef = useRef(wallet.fetchProposer);
+  fetchProposerRef.current = wallet.fetchProposer;
+  const proposersRef = useRef(proposers);
+  proposersRef.current = proposers;
 
   // A never-proposed version reads back as all-zero/empty — not a row.
   const isAbsentRecord = (rec: OnChainReleaseRecord) =>
@@ -232,6 +238,7 @@ export function useFirmwarePipeline() {
   // cache first so rows from the old deployment never linger.
   useEffect(() => {
     setReleases([]);
+    setProposers({});
     setChainSynced(false);
     let cancelled = false;
     const syncOnce = async () => {
@@ -247,6 +254,15 @@ export function useFirmwarePipeline() {
           if (cancelled || !rec) continue;
           answered = true;
           mergeChainRecord(v, rec);
+          // Proposer from the ReleaseProposed event (survives restarts) —
+          // looked up once per existing release, never for empty records.
+          const key = v.toLowerCase();
+          if (rec.goldenHash && !proposersRef.current[key]) {
+            const proposer = await fetchProposerRef.current(v);
+            if (!cancelled && proposer) {
+              setProposers((prev) => (prev[key] ? prev : { ...prev, [key]: proposer }));
+            }
+          }
         } catch {
           // Poll failures keep the last cache; staleness is visible via
           // chainSynced staying false / logs, never fake-live data.
@@ -667,31 +683,108 @@ export function useFirmwarePipeline() {
     }
   };
 
-  const simulateUpdate = async () => {
-    if (!approvalRequested) {
-      addLog("[Error] Complete all 5 workflow steps before triggering deployment.", "error");
+  // Deploy is the proposer's action: only the account that called
+  // proposeRelease for this version (per the on-chain event) may trigger it.
+  const deployVersion = targetFile ? deriveVersionTag(targetFile.name) : "v1.1";
+  const deployProposer = proposers[deployVersion.toLowerCase()] ?? null;
+  const isDeployProposer =
+    deployProposer !== null &&
+    !!wallet.address &&
+    wallet.address.toLowerCase() === deployProposer;
+
+  // Live deployment tracker (replaces the old timed animation). Every stage
+  // is read from a real source: the chain (release record), the gateway
+  // (gateway_status.json on the artifact server) and the device (its block
+  // requests + the /hello version report after reboot). No timers.
+  const statusUrl = statusUrlFor(patchUrl);
+  const gateway = useGatewayStatus(statusUrl);
+  const gs = gateway.status;
+  const trackRecord = releases.find((r) => r.version === deployVersion) ?? null;
+  const gatewayStaged =
+    gateway.online && gs?.gateway_state === "staged" && gs.staged_version === deployVersion;
+  // A version report only counts if it came after this release was staged,
+  // so a device that already ran this version earlier can't fake success.
+  const deviceRunning =
+    gs?.device_reported_version === deployVersion &&
+    (gs.staged_at == null || (gs.device_reported_at ?? 0) >= gs.staged_at);
+  const updateState: UpdateState = !isTracking
+    ? "idle"
+    : trackRecord?.isLive && deviceRunning
+      ? "success"
+      : !trackRecord?.isLive
+        ? "blockchain"
+        : !gatewayStaged
+          ? "gateway"
+          : "iot";
+  const deviceBlock =
+    gatewayStaged && gs?.device_last_block != null ? gs.device_last_block + 1 : null;
+
+  // Terminal narration of REAL transitions only (once per stage, progress in
+  // 25% steps).
+  const loggedStageRef = useRef("");
+  const loggedPctRef = useRef(-1);
+  useEffect(() => {
+    if (!isTracking) {
+      loggedStageRef.current = "";
+      loggedPctRef.current = -1;
       return;
     }
-    // Honest copy: with a real build, narrate the real artifact; otherwise
-    // label the run as simulation with no on-chain effect.
-    const isReal = Boolean(goldenHash && patchUrl);
-    const simTag = isReal ? "" : "[SIMULATION — no on-chain effect] ";
-    const sizeTag = isReal && deltaSizeKb !== null ? `${deltaSizeKb} KB` : "45 KB (simulated)";
-    setUpdateState("developer");
-    addLog(`[Developer Console] ${simTag}Uploading delta patch ${targetFile ? deriveVersionTag(targetFile.name) : "v1.1"} (${sizeTag})...`, "info");
-    await delay(1000);
-    setUpdateState("blockchain");
-    addLog(`[Blockchain] ${simTag}Anchoring golden hash ${goldenHash ? goldenHash.slice(0, 18) + "..." : "(simulated)"}...`, "info");
-    await delay(1200);
-    setUpdateState("gateway");
-    addLog("[Edge Gateway] Polling contract... Payload verified against Golden Hash.", "success");
-    addLog("[Edge Gateway] Encapsulating payload with OSCORE (AES-CCM-16-64-128).", "success");
-    await delay(1200);
-    setUpdateState("iot");
-    addLog("[IoT Transport] Streaming OSCORE payload via CoAP/UDP to ESP32...", "info");
-    await delay(1500);
-    addLog("[ESP32] Streamed reconstruction complete. Rebooting to v1.1...", "success");
-    setUpdateState("success");
+    if (trackRecord?.isRevoked) {
+      addLog(`[Tracker] ${deployVersion} was REVOKED on-chain — the gateway destroys its artifacts and devices are refused. Tracking stopped.`, "error");
+      setIsTracking(false);
+      return;
+    }
+    const stageKey = updateState === "gateway" ? `gateway:${gateway.online}` : updateState;
+    if (loggedStageRef.current !== stageKey) {
+      loggedStageRef.current = stageKey;
+      if (updateState === "blockchain") {
+        addLog(`[Tracker] Chain: ${deployVersion} is not live yet (${trackRecord?.approvalCount ?? 0}/2 approvals) — waiting for a second authorized signature.`, "info");
+      } else if (updateState === "gateway") {
+        addLog(
+          gateway.online
+            ? `[Tracker] Chain: ${deployVersion} is LIVE. Gateway is "${gs?.gateway_state}" — waiting for it to download, verify and encrypt ${deployVersion}.`
+            : `[Tracker] Chain: ${deployVersion} is LIVE, but the gateway status feed is offline (${statusUrl}) — is the gateway running, with the artifact server on :8000?`,
+          gateway.online ? "info" : "warning"
+        );
+      } else if (updateState === "iot") {
+        addLog(`[Tracker] Gateway staged ${deployVersion}: ${gs?.blocks_total ?? "?"} encrypted blocks (key fp ${gs?.key_fp ?? "?"}). Waiting for the device to pull them.`, "success");
+      } else if (updateState === "success") {
+        addLog(`[Tracker] Device ${gs?.device_reported_ip ?? ""} rebooted and reports ${deployVersion} — deployment confirmed end to end.`, "success");
+      }
+    }
+    if (updateState === "iot" && deviceBlock !== null && gs?.blocks_total) {
+      const pct = gs.device_final_sent
+        ? 100
+        : Math.floor((deviceBlock / gs.blocks_total) * 4) * 25;
+      if (pct > loggedPctRef.current) {
+        loggedPctRef.current = pct;
+        addLog(
+          `[Tracker] Device ${gs.device_ip ?? ""}: block ${deviceBlock}/${gs.blocks_total} (${pct}%)${gs.device_final_sent ? " — final block delivered; device commits and reboots, waiting for its version report" : ""}.`,
+          pct === 100 ? "success" : "info"
+        );
+      }
+    }
+  }, [isTracking, updateState, gateway.online, deviceBlock, trackRecord, gs, deployVersion, statusUrl, addLog]);
+
+  const toggleTracking = () => {
+    if (isTracking) {
+      setIsTracking(false);
+      addLog("[Tracker] Stopped.", "info");
+      return;
+    }
+    if (!approvalRequested) {
+      addLog("[Error] Complete all 5 workflow steps before tracking the deployment.", "error");
+      return;
+    }
+    if (!isDeployProposer) {
+      addLog(
+        `[Governance] Tracking is restricted to the proposer of ${deployVersion} (${deployProposer ? truncateAddress(deployProposer) : "unknown — not proposed on this contract"}) — connected ${wallet.address ? truncateAddress(wallet.address) : "no wallet"}.`,
+        "error"
+      );
+      return;
+    }
+    addLog(`[Tracker] Tracking ${deployVersion}: chain → gateway (${statusUrl}) → device.`, "info");
+    setIsTracking(true);
   };
 
   return {
@@ -718,6 +811,9 @@ export function useFirmwarePipeline() {
     wallet,
     chainSynced,
     proposers,
+    deployVersion,
+    deployProposer,
+    isDeployProposer,
     handleLoadBinaries,
     handleLoadBinaryFile,
     handleGenerateDelta,
@@ -726,6 +822,10 @@ export function useFirmwarePipeline() {
     handleRequestApproval,
     handleExecuteKillSwitch,
     handleApproveUpdate,
-    simulateUpdate,
+    toggleTracking,
+    isTracking,
+    gateway,
+    trackRecord,
+    deviceBlock,
   };
 }

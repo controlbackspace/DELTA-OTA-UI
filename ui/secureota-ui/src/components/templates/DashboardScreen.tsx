@@ -6,6 +6,7 @@ import { NodeConstraintsSidebar } from "../organisms/NodeConstraintsSidebar";
 import { LedgerDeploymentsTable } from "../organisms/LedgerDeploymentsTable";
 import { SystemLogsTerminal } from "../organisms/SystemsLogTerminal";
 import { WalletQrModal } from "../organisms/WalletQrModal";
+import { DeploymentTracker } from "../organisms/DeploymentTracker";
 import { useFirmwarePipeline } from "../../features/firmware/useFirmwarePipeline";
 import { truncateAddress } from "../../lib/web3Payloads";
 
@@ -19,6 +20,16 @@ export const DashboardScreen: React.FC = () => {
     pipeline.urlConfigured &&
     pipeline.walletConnected &&
     pipeline.approvalRequested;
+
+  // Tracking is the proposer's action (on-chain ReleaseProposed event);
+  // stopping an active tracker is always allowed.
+  const canTrack = pipeline.isTracking || (allStepsComplete && pipeline.isDeployProposer);
+  const trackBlockedReason =
+    !pipeline.isTracking && allStepsComplete && !pipeline.isDeployProposer
+      ? pipeline.deployProposer
+        ? `Only the proposer of ${pipeline.deployVersion} (${truncateAddress(pipeline.deployProposer)}) can track this release`
+        : `${pipeline.deployVersion} has no on-chain proposer yet — propose it first`
+      : undefined;
 
   return (
     <div className="h-screen bg-[#05080f] text-slate-300 flex flex-col overflow-hidden font-mono">
@@ -39,7 +50,12 @@ export const DashboardScreen: React.FC = () => {
         </div>
 
         <div className="flex items-center gap-3 font-sans">
-          <StatusPill color="emerald" label="Gateway Online" dot />
+          {/* Real liveness: gateway heartbeat in gateway_status.json (< 20 s old). */}
+          <StatusPill
+            color={pipeline.gateway.online ? "emerald" : "rose"}
+            label={pipeline.gateway.online ? "Gateway Online" : "Gateway Offline"}
+            dot
+          />
           <StatusPill color="cyan" label="Chain: 31337 (Local)" dot />
 
           {/* Connected Wallet Badge / modal trigger. Modal opens on the
@@ -62,16 +78,17 @@ export const DashboardScreen: React.FC = () => {
 
           <button
             type="button"
-            onClick={pipeline.simulateUpdate}
-            disabled={!allStepsComplete || pipeline.updateState !== "idle"}
+            onClick={pipeline.toggleTracking}
+            disabled={!canTrack}
+            title={trackBlockedReason}
             className={`flex items-center gap-2 px-5 py-2 rounded border text-sm transition-all duration-200 ${
-              allStepsComplete && pipeline.updateState === "idle"
+              canTrack
                 ? "border-cyan-500/70 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400 cursor-pointer"
                 : "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
             }`}
           >
             <Zap className="w-4 h-4" />
-            Deploy Test Update
+            {pipeline.isTracking ? "Stop Tracking" : "Track Deployment"}
           </button>
         </div>
       </header>
@@ -176,6 +193,18 @@ export const DashboardScreen: React.FC = () => {
               />
             </div>
           </div>
+
+          {/* Live chain -> gateway -> device tracker (real data only) */}
+          {pipeline.isTracking && (
+            <DeploymentTracker
+              version={pipeline.deployVersion}
+              stage={pipeline.updateState}
+              record={pipeline.trackRecord}
+              gatewayOnline={pipeline.gateway.online}
+              status={pipeline.gateway.status}
+              deviceBlock={pipeline.deviceBlock}
+            />
+          )}
 
           {/* Active On-Chain Deployments Table */}
           <LedgerDeploymentsTable

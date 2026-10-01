@@ -64,6 +64,11 @@ const asWcInternals = (wp: unknown): WcProviderInternals | null =>
 /** MetaMask Mobile requires an HTTPS RPC for custom networks. */
 const isPhoneRpcUrl = (url: string): boolean => /^https:\/\/[^/\s]+$/.test(url);
 
+/** Hardhat serves plain HTTP: https:// on a loopback host never answers
+ *  (usually the tunnel's scheme pasted into the Node RPC field). */
+export const isHttpsLoopback = (url: string): boolean =>
+  /^https:\/\/(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?\/?$/i.test(url.trim());
+
 export function getAppKit() {
   if (typeof window === "undefined") return null;
   if (!appKitInstance) {
@@ -165,7 +170,12 @@ export function useDesktopWallet() {
   const [rpcUrl, setRpcUrl] = useState<string>(() => {
     try {
       const stored = localStorage.getItem("SECUREOTA_RPC_URL");
-      if (stored && stored.trim() && /^https?:\/\/.+/.test(stored.trim())) {
+      if (
+        stored &&
+        stored.trim() &&
+        /^https?:\/\/.+/.test(stored.trim()) &&
+        !isHttpsLoopback(stored)
+      ) {
         return stored.trim();
       }
     } catch {
@@ -180,6 +190,12 @@ export function useDesktopWallet() {
     if (!clean || !/^https?:\/\/[^/]+(:\d+)?$/.test(clean)) {
       setStatusMessage(
         `Invalid RPC URL rejected: "${url}" — expected http(s)://host[:port]; keeping current endpoint.`
+      );
+      return;
+    }
+    if (isHttpsLoopback(clean)) {
+      setStatusMessage(
+        `RPC URL rejected: "${clean}" — the local Hardhat node speaks plain http; use http://127.0.0.1:8545 (https tunnel URLs belong in Phone RPC).`
       );
       return;
     }
@@ -900,6 +916,35 @@ export function useDesktopWallet() {
     [contractAddress, rpcUrl]
   );
 
+  /**
+   * Who proposed a version — read from the on-chain ReleaseProposed event, so
+   * it survives app restarts. Lowercased address, or null when the version
+   * was never proposed or the node is unreachable. version is not an indexed
+   * event field, so all ReleaseProposed logs are fetched and matched here.
+   */
+  const fetchProposer = useCallback(
+    async (version: string): Promise<string | null> => {
+      if (!contractAddress || !ethers.isAddress(contractAddress)) return null;
+      try {
+        const jsonRpcProvider = new ethers.JsonRpcProvider(rpcUrl);
+        const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, jsonRpcProvider);
+        const wanted = formatVersionBytes32(version).toLowerCase();
+        const logs = await contract.queryFilter(contract.filters.ReleaseProposed(), 0);
+        for (const log of logs) {
+          const args = (log as ethers.EventLog).args;
+          if (args && String(args.version).toLowerCase() === wanted) {
+            return String(args.proposer).toLowerCase();
+          }
+        }
+        return null;
+      } catch (err) {
+        console.warn("Could not query release proposer:", err);
+        return null;
+      }
+    },
+    [contractAddress, rpcUrl]
+  );
+
   return {
     address,
     chainId,
@@ -930,5 +975,6 @@ export function useDesktopWallet() {
     approveRelease,
     revokeRelease,
     fetchRelease,
+    fetchProposer,
   };
 }
