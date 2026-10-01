@@ -225,6 +225,15 @@ async def main_loop():
         existing_blocks = 0
         installed_version = "v1.0"
 
+    # "Installed" means staged AND servable. A state file that says v1.1 with
+    # no blocks on disk (kill switch ran, artifacts wiped, fresh chain on the
+    # same contract address) would otherwise read as "already staged" forever:
+    # the release is live, nothing is served, and no device ever updates.
+    if not existing_blocks and installed_version != "v1.0":
+        print(f"[Boot] {installed_version} is recorded as staged but no block frames exist - "
+              f"re-staging from the chain.")
+        installed_version = "v1.0"
+
     # Live status for the console tracker. Blocks already on disk from an
     # earlier run of this same contract are still being served.
     gateway_status.update(
@@ -287,6 +296,10 @@ async def main_loop():
                 _clear_block_frames()
                 _clear_staged()
                 revoked_handled.add(target)
+                installed_version = "v1.0"   # nothing staged any more: a later re-stage must run
+                with open(state_file, "w") as file:
+                    json.dump({"installed_version": installed_version,
+                               "contract": contract_id}, file)
                 print(f"[Gateway] KILL SWITCH: Release {target} has been revoked on-chain. "
                       f"Artifacts destroyed; serving nothing until a newer release goes live.")
             else:
@@ -413,6 +426,15 @@ async def main_loop():
                 await asyncio.sleep(POLL_INTERVAL)
         else:
 
+            if installed_version != "v1.0" and not any(BLOCKS_DIR.glob("block_*.bin")):
+                # Blocks vanished while running (deleted by hand, disk cleanup):
+                # forget the staging so the next pass re-downloads and re-stages.
+                print(f"[Gateway] {installed_version} is recorded as staged but its block "
+                      f"frames are gone - re-staging.")
+                gateway_status.event(f"{installed_version}: staged blocks missing on disk - re-staging",
+                                     staged_version=None, blocks_total=None)
+                installed_version = "v1.0"
+                continue
             if installed_version != "v1.0":
                 print(f"[Gateway] {installed_version} staged "
                       f"({gateway_status._state.get('blocks_total') or '?'} blocks) - "
