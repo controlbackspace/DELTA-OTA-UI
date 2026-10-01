@@ -78,7 +78,7 @@ minutes, which would hand a rebooting device the previous release's blocks.
 
 ```bat
 cd Documents\PlatformIO\Projects\Thesis
-pio run                                   :: builds factory, app_v1_0, app_v1_1
+pio run                                   :: builds factory + apps; publishes release-images\app-v1.0.bin, app-v1.1.bin
 tools\flash_device.bat erase   COM3       :: clean chip (wipes the key too)
 tools\flash_device.bat factory COM3       :: updater -> factory, boot = factory
 :: close the serial monitor, then from DELTA-OTA-UI\gateway:
@@ -86,17 +86,23 @@ python provision_device.py --port COM3    :: must report fp=<gateway fp> MATCHES
 tools\flash_device.bat app     COM3 v1.0  :: application -> ota_0 (byte-exact)
 ```
 
-Release v1.1 from the console:
-- **Base** = `.pio\build\app_v1_0\firmware.bin`
-- **Target** = `.pio\build\app_v1_1\firmware.bin`
+Release v1.1 from the console (files in `Projects\Thesis\release-images\`,
+with SHA-256 checksums in `SHA256SUMS.txt`):
+- **Base** = `release-images\app-v1.0.bin`
+- **Target** = `release-images\app-v1.1.bin`
 - Propose, approve, then **Track Deployment**.
 
-**Rule:** the base must be the exact file in ota_0. `flash_device app` writes
-it with esptool `keep` flags for that reason. Never put an app in ota_0 with
-plain `pio run -t upload`.
+The console takes the release version from the target's filename
+(`app-v1.1.bin` → `v1.1`). That is why the release images are named by
+version: every PlatformIO build output is called `firmware.bin`.
 
-Next version: add `[env:app_v1_2]` with `-DAPP_VERSION=\"v1.2\"`. The base is
-whatever version the device runs now.
+**Rule:** the base must be the exact file in ota_0. `flash_device app` writes
+`release-images\app-<ver>.bin` with esptool `keep` flags for that reason.
+Never put an app in ota_0 with plain `pio run -t upload`.
+
+Next version: copy an app env as `[env:app_v1_2]` with `-DAPP_VERSION=\"v1.2\"`
+and keep its `extra_scripts` line. The base is whatever version the device
+runs now.
 
 ## 6. Known limitations
 
