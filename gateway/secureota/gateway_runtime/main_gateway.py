@@ -11,6 +11,12 @@ from coap_server import get_lan_ip, start_coap_server
 from blockchain_poller import BlockchainPoller
 from security_engine import SecurityEngine
 from simulation.simulated_ledger import DemoBlockchainPoller
+from gateway_config import apply_config
+
+# Shared config file seeds unset env vars (console/.bat/service/exe all write
+# the same file). No behavior change when no file exists: every os.getenv
+# below keeps its built-in default. Core logic untouched.
+apply_config()
 
 ARTIFACT_DIR = Path(__file__).resolve().parent.parent.parent / "artifacts"
 DUMMY_PATCH = ARTIFACT_DIR / "dummy_patch.bin"

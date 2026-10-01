@@ -1,0 +1,122 @@
+{
+  "engine_flash_bytes": 1578,
+  "engine_static_ram_bytes": 3261,
+  "engine_symbols": 12,
+  "engine_symbol_table": [
+    {
+      "name": "_ZZN14DeltaOTAEngine12requestChunkEjE14memStartLogged",
+      "size": 1,
+      "where": "ram"
+    },
+    {
+      "name": "_GLOBAL__sub_D_otaEngine",
+      "size": 11,
+      "where": "flash"
+    },
+    {
+      "name": "_ZN14DeltaOTAEngine17_rollbackToBackupEv",
+      "size": 26,
+      "where": "flash"
+    },
+    {
+      "name": "_ZN14DeltaOTAEngine9_abortOtaEPKc",
+      "size": 45,
+      "where": "flash"
+    },
+    {
+      "name": "_ZN14DeltaOTAEngine12_flushWindowEv",
+      "size": 58,
+      "where": "flash"
+    },
+    {
+      "name": "_GLOBAL__sub_I_otaEngine",
+      "size": 83,
+      "where": "flash"
+    },
+    {
+      "name": "_ZN14DeltaOTAEngine12requestChunkEj",
+      "size": 133,
+      "where": "flash"
+    },
+    {
+      "name": "_ZN14DeltaOTAEngine5beginEv",
+      "size": 143,
+      "where": "flash"
+    },
+    {
+      "name": "_ZN14DeltaOTAEngine14_finalizePatchEv",
+      "size": 156,
+      "where": "flash"
+    },
+    {
+      "name": "_ZN14DeltaOTAEngine22_bootstrapAntiRollbackEv",
+      "size": 251,
+      "where": "flash"
+    },
+    {
+      "name": "_ZN14DeltaOTAEngine21processIncomingPacketEv",
+      "size": 672,
+      "where": "flash"
+    },
+    {
+      "name": "otaEngine",
+      "size": 3260,
+      "where": "ram"
+    }
+  ],
+  "nm_total_flash_bytes": 516051,
+  "nm_total_ram_bytes": 34952,
+  "framework_groups": {
+    "WiFi + UDP radio": {
+      "flash": 205477,
+      "ram": 5537,
+      "iram": 20
+    },
+    "Bluetooth (linked shims)": {
+      "flash": 500,
+      "ram": 84,
+      "iram": 32
+    },
+    "lwIP (TCP/IP)": {
+      "flash": 104167,
+      "ram": 3115,
+      "iram": 0
+    },
+    "FreeRTOS": {
+      "flash": 4930,
+      "ram": 765,
+      "iram": 14279
+    },
+    "mbedTLS (CCM+SHA kept)": {
+      "flash": 2477,
+      "ram": 0,
+      "iram": 0
+    },
+    "Arduino core": {
+      "flash": 29518,
+      "ram": 702,
+      "iram": 4039
+    },
+    "NVS / Preferences glue": {
+      "flash": 13698,
+      "ram": 24,
+      "iram": 0
+    },
+    "App glue (setup/loop, incl. inlined engine)": {
+      "flash": 3417,
+      "ram": 3266,
+      "iram": 0
+    },
+    "Other libs (newlib, drivers, glue)": {
+      "flash": 201614,
+      "ram": 6807,
+      "iram": 18157
+    },
+    "Unattributed (alignment, COMMON, linker-owned)": {
+      "flash": 0,
+      "ram": 14652,
+      "iram": 0
+    }
+  },
+  "method_note": "Engine code inlined into loop()/global-init hides inside main.cpp.o (see App-glue map row); nm-misses are bounded above by that row, never guessed into the engine total."
+}

@@ -1,0 +1,11 @@
+{
+  "_note": "CITED ESTIMATES, not measurements. Replace with the exact Zephyr/Contiki release figures used in the thesis chapter; every row must carry its source. The budget script sums these verbatim.",
+  "rows": [
+    {
+      "component": "Zephyr RTOS + 6LoWPAN + CoAP/OSCORE stack",
+      "flash_bytes": 122880,
+      "ram_bytes": 20480,
+      "source": "Zephyr/Contiki published minimal footprint, vX.Y (REPLACE with exact citation)"
+    }
+  ]
+}

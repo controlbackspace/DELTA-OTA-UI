@@ -9,7 +9,7 @@ class BlockchainPoller:
         self.rpc_url = os.getenv('DELTA_RPC_URL', 'http://127.0.0.1:8545')
 
         #Assigning the contract address string (overridable via env var)
-        self.contract_address = os.getenv('DELTA_CONTRACT_ADDRESS', "0x445bd590A01fe6709d4f13A8F579c1e4846921db")
+        self.contract_address = os.getenv('DELTA_CONTRACT_ADDRESS', "0x5FbDB2315678afecb367f032d93F642f64180aa3")
 
         #Pasting the standard Mock ABI JSON array we defined in the meeting
         self.CONTRACT_ABI = [{
