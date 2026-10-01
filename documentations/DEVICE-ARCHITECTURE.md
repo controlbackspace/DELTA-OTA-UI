@@ -104,6 +104,20 @@ Next version: copy an app env as `[env:app_v1_2]` with `-DAPP_VERSION=\"v1.2\"`
 and keep its `extra_scripts` line. The base is whatever version the device
 runs now.
 
+### Reset the device to v1.0
+
+| Situation | Command |
+|---|---|
+| Replay the demo after a successful update | `demo-down` / `demo-up` (fresh chain), then `tools\flash_device.bat app COM3 v1.0` |
+| A version was recorded as failed (the updater never retries it), or anything looks wrong | `tools\flash_device.bat reset COM3`: erase + factory + provision key + app v1.0 |
+
+- **The light reset** rewrites only ota_0. The factory updater, key and
+  health record stay, and the v1.0 app re-registers itself on its next boot.
+- **The full reset** wipes the whole chip. The key is re-sent from the
+  gateway config, so the fingerprint is unchanged.
+- **Always start a fresh chain before replaying.** Otherwise the updater
+  pulls a release that is still live on the old chain as soon as it boots.
+
 ## 6. Known limitations
 
 - The application must not damage NVS `delta-app` or otadata. It runs with

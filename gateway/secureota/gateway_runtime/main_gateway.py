@@ -375,7 +375,12 @@ async def main_loop():
                 await asyncio.sleep(POLL_INTERVAL)
         else:
 
-            print("[Gateway] No new updates found. Sleeping...")
+            if installed_version != "v1.0":
+                print(f"[Gateway] {installed_version} staged "
+                      f"({gateway_status._state.get('blocks_total') or '?'} blocks) - "
+                      f"waiting for devices. Next chain check in {POLL_INTERVAL}s.")
+            else:
+                print("[Gateway] No new updates found. Sleeping...")
             # Heartbeat: keeps updated_at fresh so the console shows "online".
             gateway_status.update(
                 gateway_state="staged" if installed_version != "v1.0" else "waiting")
