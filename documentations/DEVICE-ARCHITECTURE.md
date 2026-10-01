@@ -58,7 +58,10 @@ checks this at every boot: if the device runs that version it restores
 ota_1 (the previous application) into ota_0, records the version as `failed`
 (never reinstalled) and boots the old app, which reports itself via `/hello`.
 The app has no networking, so a running device picks the revoke up at its
-next reset or power cycle. Needs the updated factory image
+next reset or power cycle. The rolled-back version is **not** blacklisted:
+once the authors fix it and propose the same tag again (the contract allows
+re-proposing a *revoked* version, with a fresh 2-of-3 approval round), the
+gateway re-stages it and the device updates normally. Needs the updated factory image
 (`toolslash_device.bat factory COM3`).
 
 ## 4. Gateway side and the DOTA stream

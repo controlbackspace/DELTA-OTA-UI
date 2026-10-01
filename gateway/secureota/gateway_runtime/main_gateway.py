@@ -290,6 +290,12 @@ async def main_loop():
         # Kill switch destroys the artifacts once, then the gateway keeps
         # polling and serves nothing (devices get 4.01) until a NEWER release
         # goes live - a revoke is followed by a fix, not by a manual restart.
+        # A revoked version proposed again (fixed payload) is a new release:
+        # forget that its kill switch ran so a later revoke destroys it again.
+        if release_data["isRevoked"] is False:
+            revoked_handled.discard(target)
+            revoked_announced.discard(target)
+
         if release_data["isRevoked"] is True:
             if target not in revoked_handled:
                 ENCRYPTED_PATCH.unlink(missing_ok=True)

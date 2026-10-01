@@ -930,13 +930,15 @@ export function useDesktopWallet() {
         const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, jsonRpcProvider);
         const wanted = formatVersionBytes32(version).toLowerCase();
         const logs = await contract.queryFilter(contract.filters.ReleaseProposed(), 0);
+        // A revoked version can be proposed again: the NEWEST proposal counts.
+        let proposer: string | null = null;
         for (const log of logs) {
           const args = (log as ethers.EventLog).args;
           if (args && String(args.version).toLowerCase() === wanted) {
-            return String(args.proposer).toLowerCase();
+            proposer = String(args.proposer).toLowerCase();
           }
         }
-        return null;
+        return proposer;
       } catch (err) {
         console.warn("Could not query release proposer:", err);
         return null;

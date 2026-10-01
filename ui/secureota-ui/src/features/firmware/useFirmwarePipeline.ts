@@ -191,6 +191,15 @@ export function useFirmwarePipeline() {
           addLog(`[Chain] ${version} synced: approvals ${rec.approvalCount}/3 live=${rec.isLive} revoked=${rec.isRevoked}.`, "info");
         }
       }
+      if (prev?.isRevoked && !rec.isRevoked) {
+        // Proposed again after a revoke: the old proposer no longer applies.
+        setProposers((p) => {
+          const next = { ...p };
+          delete next[version.toLowerCase()];
+          return next;
+        });
+        addLog(`[Chain] ${version} was proposed again after its revoke — new approval round (${rec.approvalCount}/3).`, "info");
+      }
       if (!prev) {
         addLog(`[Chain] ${version} found on-chain: approvals ${rec.approvalCount}/3 live=${rec.isLive} revoked=${rec.isRevoked}.`, "success");
       }

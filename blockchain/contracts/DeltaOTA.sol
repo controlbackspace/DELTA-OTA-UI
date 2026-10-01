@@ -14,7 +14,11 @@ contract DeltaOTA {
 
     // State storage mappings
     mapping(bytes32 => FirmwareRelease) public releases; // Maps version -> FirmwareRelease struct
-    mapping(bytes32 => mapping(address => bool)) public hasSigned; // Maps version -> dev address -> signature status
+    // A revoked version may be proposed again once fixed. Each proposal round
+    // gets its own signature set (keyed by `revision`), so the old round's
+    // approvals can never count toward the new one.
+    mapping(bytes32 => uint32) public revision; // Maps version -> proposal round (0 = first)
+    mapping(bytes32 => mapping(uint32 => mapping(address => bool))) private signedInRound;
     mapping(address => bool) public authorizedDevelopers; // Whitelist mapping for active developers
 
     // Administrative and Multi-signature variables (Fixed at 3 Devs, 2 Threshold)
@@ -43,6 +47,11 @@ contract DeltaOTA {
     );
     
     event ReleaseRevoked(bytes32 version, address indexed revoker);
+
+    // version -> dev address -> has signed the CURRENT proposal round
+    function hasSigned(bytes32 version, address dev) public view returns (bool) {
+        return signedInRound[version][revision[version]][dev];
+    }
 
     // Modifier to enforce Zero Trust access control based on the developer whitelist
     modifier onlyAuthorized() {
@@ -87,11 +96,17 @@ contract DeltaOTA {
         bytes32 goldenHash,
         string calldata ipfsUrl
     ) external onlyAuthorized {
-        // Prevent duplicate version entries to maintain ledger integrity
-        require(
-            releases[version].version == bytes32(0),
-            "Registry Error: Release version already exists"
-        );
+        // Prevent duplicate version entries to maintain ledger integrity. The
+        // one exception: a REVOKED version may be proposed again (fixed
+        // payload, new hash) and starts a fresh approval round. Live and
+        // pending releases stay protected.
+        if (releases[version].version != bytes32(0)) {
+            require(
+                releases[version].isRevoked,
+                "Registry Error: Release version already exists"
+            );
+            revision[version]++;
+        }
         require(goldenHash != bytes32(0), "Validation Error: Golden Hash cannot be empty");
 
         releases[version] = FirmwareRelease({
@@ -104,7 +119,7 @@ contract DeltaOTA {
         });
 
         // Record the proposer's signature to prevent double-voting in approveRelease()
-        hasSigned[version][msg.sender] = true;
+        signedInRound[version][revision[version]][msg.sender] = true;
 
         emit ReleaseProposed(version, goldenHash, ipfsUrl, msg.sender);
         emit ReleaseApproved(version, msg.sender, 1);
@@ -120,12 +135,12 @@ contract DeltaOTA {
         require(!release.isRevoked, "Governance Error: Cannot approve a revoked release");
         require(!release.isLive, "Governance Error: Release is already Live");
         require(
-            !hasSigned[version][msg.sender],
+            !hasSigned(version, msg.sender),
             "Governance Error: Developer has already signed this release"
         );
 
         // Record the cryptographic signature
-        hasSigned[version][msg.sender] = true;
+        signedInRound[version][revision[version]][msg.sender] = true;
         release.approvalCount++;
 
         emit ReleaseApproved(version, msg.sender, release.approvalCount);
