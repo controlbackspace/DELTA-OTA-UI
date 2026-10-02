@@ -3,7 +3,10 @@ import json
 import os
 import re
 import sys
+from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / "secureota" / "gateway_runtime"))
+from gateway_config import load_config  # noqa: E402
 from secureota.release_builder.core import (
     ARTIFACT_HTTP_PORT,
     build_release,
@@ -67,9 +70,11 @@ def main():
 
     # 6b. Real download URL: serve_artifacts.py exposes artifacts/ on the
     # LAN at ARTIFACT_HTTP_PORT, so this URL resolves off-box (curl-provable).
-    metadata.patch_url = (
-        f"http://{gateway_lan_ip()}:{ARTIFACT_HTTP_PORT}/{output_filename}"
-    )
+    # DELTA_ARTIFACT_HOST (env or gateway.json) overrides the LAN IP: a gateway
+    # reachable only over Tailscale must download from this PC's Tailscale
+    # address, not its LAN address.
+    host = (load_config().get("DELTA_ARTIFACT_HOST") or "").strip() or gateway_lan_ip()
+    metadata.patch_url = f"http://{host}:{ARTIFACT_HTTP_PORT}/{output_filename}"
 
     if args.json:
         # 7a. Machine-readable output: single JSON object on stdout

@@ -31,9 +31,23 @@ deltaota-gateway key --reveal    # print the OTA key for the ESP32 reset tool
 deltaota-gateway update          # git pull + dependencies + restart
 ```
 
-The PC must run Hardhat with `--hostname 0.0.0.0` (TCP 8545 open) and
-`python gateway/serve_artifacts.py` (TCP 8000 open: the Pi downloads patches
-from it). In the console's tracker set **Gateway address** to the Pi's IP.
+**Tailscale setup (what we use).** The node URL is the PC's fixed Funnel URL
+`https://<laptop>.<tailnet>.ts.net` (printed by `demo-up`; it points at
+`rpc_guard`, which allows every read the gateway makes). It works from any
+network, needs no firewall changes, and is only live while `demo-up` is
+running. On one LAN you can use `http://<PC-IP>:8545` instead (then Hardhat
+needs `--hostname 0.0.0.0`, which `demo-up` already sets).
+
+- **ESP32 `GATEWAY_IP`** = the Pi's LAN/hotspot IP (the installer's bind address,
+  never a `100.x` Tailscale address: the ESP32 is not on the tailnet).
+- **Console "Gateway address"** (in the tracker) = the Pi's Tailscale IP or
+  MagicDNS name, e.g. `100.x.y.z`; the Pi serves the status feed on `:8000`.
+- **Patch downloads:** the Pi fetches `http://<PC>:8000/patch_vX.bin` (the PC runs
+  `python gateway/serve_artifacts.py`). If the Pi is not on the PC's LAN, set the
+  PC's Tailscale address as the host in release URLs *before building a release*:
+  `setx DELTA_ARTIFACT_HOST 100.x.y.z` (restart the app), or add
+  `"DELTA_ARTIFACT_HOST"` to `%APPDATA%\DeltaOTA\gateway.json`.
+
 Unattended: `--rpc URL --contract 0x... --bind IP (--key HEX | --generate-key) --yes`.
 The sections below describe the all-on-Pi variant (`setup.sh`, Hardhat on the Pi).
 

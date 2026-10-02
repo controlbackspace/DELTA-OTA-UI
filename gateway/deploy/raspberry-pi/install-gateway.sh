@@ -88,9 +88,12 @@ fi
 
 # ---- 2. configuration -------------------------------------------------------
 info "[3/5] Configuration ($ENV_FILE)"
-RPC="${RPC:-$(ask "Blockchain node URL (the PC running Hardhat)" "$(env_get DELTA_RPC_URL)")}"
+echo "    Node URL: the dev PC's Tailscale Funnel URL (https://<laptop>.<tailnet>.ts.net,"
+echo "    the fixed phone-RPC URL printed by demo-up) or, on one LAN, http://<PC-IP>:8545."
+RPC="${RPC:-$(ask "Blockchain node URL" "$(env_get DELTA_RPC_URL)")}"
+RPC="${RPC%/}"
 [[ -n "$RPC" ]] || RPC="http://127.0.0.1:8545"
-[[ "$RPC" =~ ^https?://[^[:space:]]+$ ]] || die "RPC URL must look like http://<PC-IP>:8545"
+[[ "$RPC" =~ ^https?://[^[:space:]]+$ ]] || die "Node URL must look like https://<laptop>.<tailnet>.ts.net or http://<PC-IP>:8545"
 
 CONTRACT="${CONTRACT:-$(ask "Contract address" "$(env_get DELTA_CONTRACT_ADDRESS)")}"
 [[ "$CONTRACT" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "Contract address must be 0x + 40 hex characters."
@@ -98,6 +101,7 @@ CONTRACT="${CONTRACT:-$(ask "Contract address" "$(env_get DELTA_CONTRACT_ADDRESS
 BIND="${BIND:-$(ask "This Pi's LAN IP (the ESP32 connects here)" "$(env_get DELTA_BIND_ADDR || true)")}"
 [[ -n "$BIND" ]] || BIND="$(detect_ip)"
 [[ "$BIND" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Pi IP must be an IPv4 address (got '$BIND')."
+[[ ! "$BIND" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. ]] ||     die "$BIND is a Tailscale address. The ESP32 is not on the tailnet: use this Pi's LAN/hotspot IP (ip -4 addr)."
 [[ "$BIND" != 127.* ]] || die "Bind address is loopback - the ESP32 could never reach it. Pass --bind <Pi-IP>."
 
 EXISTING_KEY="$(env_get DELTA_OTA_KEY || true)"
@@ -131,8 +135,12 @@ if curl -s -m 4 -H 'Content-Type: application/json' \
     --data '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}' "$RPC" | grep -q '"result"'; then
     echo "    Node reachable at $RPC."
 else
-    echo "    WARNING: node not reachable at $RPC yet. Start Hardhat on the PC with"
-    echo "             'npx hardhat node --hostname 0.0.0.0' and open TCP 8545 in its firewall."
+    echo "    WARNING: node not reachable at $RPC yet (saved anyway)."
+    if [[ "$RPC" == *.ts.net* ]]; then
+        echo "             Funnel is only on while the PC runs demo-up (demo-down switches it off)."
+    else
+        echo "             On the PC: 'npx hardhat node --hostname 0.0.0.0' and open TCP 8545."
+    fi
 fi
 
 # ---- 3. service --------------------------------------------------------------
@@ -248,4 +256,12 @@ fi
 echo
 echo "[OK] Done. Pi gateway: coap://$BIND:5683   status: http://$BIND:8000/gateway_status.json"
 echo "     deltaota-gateway status | logs | contract 0x... | update | help"
-echo "     Console 'Gateway address' = $BIND ;  ESP32 GATEWAY_IP = $BIND"
+TS_IP=""
+command -v tailscale >/dev/null 2>&1 && TS_IP="$(tailscale ip -4 2>/dev/null | head -n 1 || true)"
+echo "     ESP32 GATEWAY_IP (secrets.h / reset tool) = $BIND   (LAN address: the ESP32 is not on the tailnet)"
+if [[ -n "$TS_IP" ]]; then
+    echo "     Console 'Gateway address' = $TS_IP   (this Pi's Tailscale IP, works from the PC anywhere)"
+else
+    echo "     Console 'Gateway address' = $BIND   (install Tailscale on the Pi to reach it from outside this LAN)"
+fi
+echo "     Patch downloads: on the PC set DELTA_ARTIFACT_HOST=<PC Tailscale IP> (setx) if the Pi is not on the PC's LAN."

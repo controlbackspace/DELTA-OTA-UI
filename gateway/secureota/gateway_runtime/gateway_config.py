@@ -9,6 +9,10 @@ Keys:
   DELTA_RPC_URL ............ node endpoint (default localhost).
   DELTA_BIND_ADDR .......... CoAP bind (default: auto LAN IP at boot).
   SIM_LEDGER ............... "1" = simulated ledger rehearsal mode.
+  DELTA_ARTIFACT_HOST ...... host put in release download URLs (developer PC
+                             only). Default: the PC's LAN IP. Set the PC's
+                             Tailscale IP/name when the gateway (a Pi) is not
+                             on the same LAN as the PC.
   DELTA_OTA_KEY ............ 128-bit AES-CCM OTA key, 32 hex chars. SECRET:
                              written only by provision_device.py --generate,
                              never printed (callers show a fingerprint).
@@ -28,6 +32,7 @@ KEYS = (
     "DELTA_BIND_ADDR",
     "SIM_LEDGER",
     "DELTA_OTA_KEY",
+    "DELTA_ARTIFACT_HOST",
 )
 
 DEFAULTS = {
@@ -36,6 +41,7 @@ DEFAULTS = {
     "DELTA_BIND_ADDR": "",
     "SIM_LEDGER": "",
     "DELTA_OTA_KEY": "",
+    "DELTA_ARTIFACT_HOST": "",
 }
 
 
