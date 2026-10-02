@@ -203,6 +203,8 @@ export const DashboardScreen: React.FC = () => {
               gatewayOnline={pipeline.gateway.online}
               status={pipeline.gateway.status}
               deviceBlock={pipeline.deviceBlock}
+              gatewayHost={pipeline.gatewayHost}
+              onGatewayHostChange={pipeline.setGatewayHost}
             />
           )}
 

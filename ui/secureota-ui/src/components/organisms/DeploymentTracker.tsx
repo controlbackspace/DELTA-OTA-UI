@@ -14,6 +14,9 @@ export interface DeploymentTrackerProps {
   gatewayOnline: boolean;
   status: GatewayStatus | null;
   deviceBlock: number | null;
+  /** Gateway machine's address when it is not this PC (e.g. the Raspberry Pi). */
+  gatewayHost?: string;
+  onGatewayHostChange?: (host: string) => void;
 }
 
 type StepState = "done" | "active" | "pending";
@@ -62,6 +65,8 @@ export const DeploymentTracker: React.FC<DeploymentTrackerProps> = ({
   gatewayOnline,
   status,
   deviceBlock,
+  gatewayHost = "",
+  onGatewayHostChange,
 }) => {
   const total = status?.blocks_total ?? null;
   const pct = deviceBlock !== null && total ? (deviceBlock / total) * 100 : 0;
@@ -87,6 +92,19 @@ export const DeploymentTracker: React.FC<DeploymentTrackerProps> = ({
 
   return (
     <div className="shrink-0 px-6 py-4 border-b border-[#1a2a3a] bg-[#060c18]">
+      {onGatewayHostChange && (
+        <label className="flex items-center gap-2 mb-3 text-[11px] text-slate-400 font-sans">
+          Gateway address
+          <input
+            value={gatewayHost}
+            onChange={(e) => onGatewayHostChange(e.target.value)}
+            placeholder="blank = host of the patch URL (this PC) — e.g. 192.168.50.1 for the Pi"
+            spellCheck={false}
+            className="flex-1 min-w-0 px-2 py-1 rounded border border-[#1a2a3a] bg-[#070d18] text-slate-200 font-mono text-[11px] placeholder:text-slate-600"
+          />
+          <span className="text-slate-600">:8000</span>
+        </label>
+      )}
       <div className="flex items-stretch gap-3">
         <Step
           icon={<Link2 className="w-3.5 h-3.5 text-cyan-400" />}

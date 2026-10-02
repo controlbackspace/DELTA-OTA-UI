@@ -47,9 +47,45 @@ const POLL_MS = 2000;
 const STALE_AFTER_MS = 30000;
 const DEFAULT_ARTIFACT_ORIGIN = "http://127.0.0.1:8000";
 
-/** The artifact server that hosts the patch also hosts the status file, so
- *  derive its origin from the release's patch URL (falls back to localhost). */
-export function statusUrlFor(patchUrl: string | null): string {
+const GATEWAY_HOST_KEY = "deltaota.gatewayHost";
+
+/** Remembered gateway address (e.g. the Raspberry Pi), per viewer. */
+export function loadGatewayHost(): string {
+  try {
+    return window.localStorage.getItem(GATEWAY_HOST_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+export function saveGatewayHost(host: string): void {
+  try {
+    window.localStorage.setItem(GATEWAY_HOST_KEY, host);
+  } catch {
+    // storage blocked: the setting simply lasts for this session
+  }
+}
+
+/** Accepts "192.168.50.1", "pi.local:8000" or a full URL; returns an origin. */
+function originFromHost(raw: string): string | null {
+  const host = raw.trim();
+  if (!host) return null;
+  const withScheme = /^https?:\/\//i.test(host) ? host : `http://${host}`;
+  try {
+    const parsed = new URL(withScheme);
+    return `${parsed.protocol}//${parsed.hostname}:${parsed.port || "8000"}`;
+  } catch {
+    return null;
+  }
+}
+
+/** Where the gateway publishes gateway_status.json. When the gateway runs on
+ *  another machine (the Raspberry Pi) its address is set explicitly; otherwise
+ *  the artifact server that hosts the patch also hosts the status file, so the
+ *  origin comes from the release's patch URL (falls back to localhost). */
+export function statusUrlFor(patchUrl: string | null, gatewayHost = ""): string {
+  const explicit = originFromHost(gatewayHost);
+  if (explicit) return `${explicit}/gateway_status.json`;
   let origin = DEFAULT_ARTIFACT_ORIGIN;
   if (patchUrl) {
     try {

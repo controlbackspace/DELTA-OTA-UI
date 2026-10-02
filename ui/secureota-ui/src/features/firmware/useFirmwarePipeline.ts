@@ -6,7 +6,7 @@ import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
 import { isAcceptedFirmwareFile } from "../../lib/firmwareFiles";
 import { formatFileSize } from "../../lib/utils";
 import { useDesktopWallet } from "../wallet/useDesktopWallet";
-import { statusUrlFor, useGatewayStatus } from "../deployment/useGatewayStatus";
+import { loadGatewayHost, saveGatewayHost, statusUrlFor, useGatewayStatus } from "../deployment/useGatewayStatus";
 import type { OnChainReleaseRecord } from "../wallet/useDesktopWallet";
 import {
   formatVersionBytes32,
@@ -709,7 +709,12 @@ export function useFirmwarePipeline() {
   // is read from a real source: the chain (release record), the gateway
   // (gateway_status.json on the artifact server) and the device (its block
   // requests + the /hello version report after reboot). No timers.
-  const statusUrl = statusUrlFor(patchUrl);
+  const [gatewayHost, setGatewayHostState] = useState(loadGatewayHost);
+  const setGatewayHost = (host: string) => {
+    setGatewayHostState(host);
+    saveGatewayHost(host);
+  };
+  const statusUrl = statusUrlFor(patchUrl, gatewayHost);
   const gateway = useGatewayStatus(statusUrl);
   const gs = gateway.status;
   const trackRecord = releases.find((r) => r.version === deployVersion) ?? null;
@@ -856,6 +861,8 @@ export function useFirmwarePipeline() {
     toggleTracking,
     isTracking,
     gateway,
+    gatewayHost,
+    setGatewayHost,
     trackRecord,
     deviceBlock,
   };
