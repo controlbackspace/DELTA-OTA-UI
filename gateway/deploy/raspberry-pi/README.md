@@ -11,6 +11,32 @@ ESP32 (constrained node)  --CoAP/UDP 5683-->  Raspberry Pi 4  --RPC 8545-->  Har
                                                      (installed; version + golden hash)
 ```
 
+## 0. Quick install (gateway only, chain stays on the PC)
+
+```bash
+git clone -b feat-desktop-app https://github.com/controlbackspace/DELTA-OTA-UI.git ~/DELTA-OTA-UI
+sudo bash ~/DELTA-OTA-UI/gateway/deploy/raspberry-pi/install-gateway.sh
+```
+
+It asks for the PC's node URL (`http://<PC-IP>:8545`), the contract address, the
+Pi's LAN IP and the OTA key (Enter generates one), then builds the venv, writes
+`/etc/delta-gateway.env`, installs and starts `gateway.service`, and installs a
+`deltaota-gateway` command:
+
+```bash
+deltaota-gateway status          # service, config, live feed, device progress
+deltaota-gateway logs            # follow the log
+deltaota-gateway contract 0x...  # after every redeploy (restarts the gateway)
+deltaota-gateway key --reveal    # print the OTA key for the ESP32 reset tool
+deltaota-gateway update          # git pull + dependencies + restart
+```
+
+The PC must run Hardhat with `--hostname 0.0.0.0` (TCP 8545 open) and
+`python gateway/serve_artifacts.py` (TCP 8000 open: the Pi downloads patches
+from it). In the console's tracker set **Gateway address** to the Pi's IP.
+Unattended: `--rpc URL --contract 0x... --bind IP (--key HEX | --generate-key) --yes`.
+The sections below describe the all-on-Pi variant (`setup.sh`, Hardhat on the Pi).
+
 ## 1. One-time prerequisites
 
 - Raspberry Pi OS (Bookworm, 64-bit) with internet access and `git` installed.
