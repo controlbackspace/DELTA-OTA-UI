@@ -98,8 +98,18 @@ RPC="${RPC%/}"
 CONTRACT="${CONTRACT:-$(ask "Contract address" "$(env_get DELTA_CONTRACT_ADDRESS)")}"
 [[ "$CONTRACT" =~ ^0x[0-9a-fA-F]{40}$ ]] || die "Contract address must be 0x + 40 hex characters."
 
-BIND="${BIND:-$(ask "This Pi's LAN IP (the ESP32 connects here)" "$(env_get DELTA_BIND_ADDR || true)")}"
-[[ -n "$BIND" ]] || BIND="$(detect_ip)"
+# The default is the address this Pi has RIGHT NOW, not the saved one: after a
+# move to another network the saved address is stale and the CoAP server would
+# bind an IP the Pi no longer owns.
+CURRENT_IP="$(detect_ip)"
+SAVED_BIND="$(env_get DELTA_BIND_ADDR || true)"
+if [[ -n "$SAVED_BIND" && -n "$CURRENT_IP" && "$SAVED_BIND" != "$CURRENT_IP" ]]; then
+    echo "    NETWORK CHANGED: saved address $SAVED_BIND, this Pi is now $CURRENT_IP."
+    echo "    The ESP32 firmware has its gateway IP compiled in (secrets.h): it must be reflashed"
+    echo "    with the new address, or give the Pi a fixed IP (setup-network.sh hotspot|lan-static)."
+fi
+BIND="${BIND:-$(ask "This Pi's LAN IP (the ESP32 connects here)" "${CURRENT_IP:-$SAVED_BIND}")}"
+[[ -n "$BIND" ]] || BIND="$CURRENT_IP"
 [[ "$BIND" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Pi IP must be an IPv4 address (got '$BIND')."
 [[ ! "$BIND" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. ]] ||     die "$BIND is a Tailscale address. The ESP32 is not on the tailnet: use this Pi's LAN/hotspot IP (ip -4 addr)."
 [[ "$BIND" != 127.* ]] || die "Bind address is loopback - the ESP32 could never reach it. Pass --bind <Pi-IP>."
@@ -223,6 +233,51 @@ if d.get("device_reported_version"): print("device  : reports %s"%d["device_repo
               sudo -u "$SERVICE_USER" git -C "$ROOT" pull --ff-only &&
               sudo -u "$SERVICE_USER" "$ROOT/gateway/.venv/bin/pip" install -q -r "$ROOT/gateway/requirements.txt" &&
               systemctl restart gateway && echo "updated to $(git -C "$ROOT" log --oneline -1), gateway restarted" ;;
+    doctor)   need_root "$@"
+              RPC="$(env_get DELTA_RPC_URL)" CONTRACT="$(env_get DELTA_CONTRACT_ADDRESS)"               BIND="$(env_get DELTA_BIND_ADDR)" KEY="$(env_get DELTA_OTA_KEY)"               NOW_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}')"               "$PY" - <<'PYDOC'
+import hashlib, json, os, subprocess, time, urllib.request
+E = os.environ
+def rpc(method, params=()):
+    req = urllib.request.Request(E["RPC"], json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": list(params)}).encode(),
+                                 {"Content-Type": "application/json"})
+    return json.loads(urllib.request.urlopen(req, timeout=6).read())["result"]
+def run(*cmd):
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True).stdout.strip()
+    except OSError:
+        return ""
+def line(ok, name, detail):
+    print("%-4s %-14s %s" % ("OK" if ok else "FAIL", name, detail))
+active = run("systemctl", "is-active", "gateway") or "unknown"
+line(active == "active", "service", active)
+now, bind = E["NOW_IP"], E["BIND"]
+line(bool(bind) and bind == now, "bind address", "saved %s, Pi is now %s%s" % (bind or "(none)", now or "(no route)",
+     "" if bind == now else "  -> deltaota-gateway bind %s  (and reflash the ESP32 with it)" % now))
+try:
+    cid = rpc("eth_chainId")
+    line(cid == "0x7a69", "node", "%s answers, chain %s%s" % (E["RPC"], cid, "" if cid == "0x7a69" else " (expected 0x7a69 = 31337)"))
+    try:
+        code = rpc("eth_getCode", [E["CONTRACT"], "latest"])
+        line(code not in ("0x", "0x0", None), "contract", "%s %s" % (E["CONTRACT"], "has code" if code not in ("0x", "0x0", None) else
+             "has NO code on this chain -> deltaota-gateway contract <address from the latest deploy>"))
+    except Exception as e:
+        line(False, "contract", "check failed: %s" % e)
+except Exception as e:
+    line(False, "node", "%s unreachable (%s). On the PC: demo-up running? Funnel on?" % (E["RPC"], e))
+try:
+    line(True, "key", "fp=%s  (must equal the ESP32 'Key loaded fp=')" % hashlib.sha256(bytes.fromhex(E["KEY"])).hexdigest()[:8])
+except Exception:
+    line(False, "key", "missing or malformed")
+try:
+    d = json.loads(urllib.request.urlopen("http://127.0.0.1:8000/gateway_status.json", timeout=4).read())
+    age = time.time() - d.get("updated_at", 0)
+    line(age < 30, "status feed", "state=%s following=%s staged=%s (updated %.0fs ago)" % (d.get("gateway_state"), d.get("target_version"), d.get("staged_version"), age))
+except Exception as e:
+    line(False, "status feed", "not answering on :8000 (%s)" % e)
+ss = run("ss", "-lun")
+line(":5683" in ss and (bind in ss), "CoAP socket", "UDP 5683 %s" % ("listening on %s" % bind if bind in ss else "NOT bound to %s (restart after a network change)" % bind))
+PYDOC
+              ;;
     config)   need_root "$@"; sed -E 's/^(DELTA_OTA_KEY)=.*/\1=********/' "$ENV_FILE" ;;
     *)        cat <<'HELP'
 deltaota-gateway <command>
@@ -234,6 +289,7 @@ deltaota-gateway <command>
   bind <Pi-IP>            set the address the ESP32 connects to and restart
   key [--reveal|--set H]  show the key fingerprint / print it / replace it
   update                  git pull + dependencies + restart
+  doctor                  check service, IP, node, contract, key, feed, CoAP socket
   config                  show the configuration (key masked)
 HELP
               ;;
