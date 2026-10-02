@@ -70,6 +70,11 @@ detect_ip() {
     echo "$ip"
 }
 
+# True when this machine currently owns the address (any interface). A hotspot
+# Pi (setup-network.sh hotspot) owns 192.168.50.1 on wlan0 while its default
+# route - and so detect_ip - points at the ethernet uplink.
+owns_ip() { ip -4 -o addr 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -qx "$1"; }
+
 PY="${DELTA_PY:-$ROOT/gateway/.venv/bin/python}"
 fingerprint() { "$PY" -c "import hashlib,sys;print(hashlib.sha256(bytes.fromhex(sys.argv[1])).hexdigest()[:8])" "$1"; }
 
@@ -103,12 +108,15 @@ CONTRACT="${CONTRACT:-$(ask "Contract address" "$(env_get DELTA_CONTRACT_ADDRESS
 # bind an IP the Pi no longer owns.
 CURRENT_IP="$(detect_ip)"
 SAVED_BIND="$(env_get DELTA_BIND_ADDR || true)"
-if [[ -n "$SAVED_BIND" && -n "$CURRENT_IP" && "$SAVED_BIND" != "$CURRENT_IP" ]]; then
+DEFAULT_BIND="${CURRENT_IP:-$SAVED_BIND}"
+if [[ -n "$SAVED_BIND" ]] && owns_ip "$SAVED_BIND"; then
+    DEFAULT_BIND="$SAVED_BIND"          # still ours (e.g. the hotspot address): keep it
+elif [[ -n "$SAVED_BIND" && -n "$CURRENT_IP" && "$SAVED_BIND" != "$CURRENT_IP" ]]; then
     echo "    NETWORK CHANGED: saved address $SAVED_BIND, this Pi is now $CURRENT_IP."
     echo "    The ESP32 firmware has its gateway IP compiled in (secrets.h): it must be reflashed"
     echo "    with the new address, or give the Pi a fixed IP (setup-network.sh hotspot|lan-static)."
 fi
-BIND="${BIND:-$(ask "This Pi's LAN IP (the ESP32 connects here)" "${CURRENT_IP:-$SAVED_BIND}")}"
+BIND="${BIND:-$(ask "This Pi's LAN IP (the ESP32 connects here)" "$DEFAULT_BIND")}"
 [[ -n "$BIND" ]] || BIND="$CURRENT_IP"
 [[ "$BIND" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "Pi IP must be an IPv4 address (got '$BIND')."
 [[ ! "$BIND" =~ ^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\. ]] ||     die "$BIND is a Tailscale address. The ESP32 is not on the tailnet: use this Pi's LAN/hotspot IP (ip -4 addr)."
@@ -251,8 +259,9 @@ def line(ok, name, detail):
 active = run("systemctl", "is-active", "gateway") or "unknown"
 line(active == "active", "service", active)
 now, bind = E["NOW_IP"], E["BIND"]
-line(bool(bind) and bind == now, "bind address", "saved %s, Pi is now %s%s" % (bind or "(none)", now or "(no route)",
-     "" if bind == now else "  -> deltaota-gateway bind %s  (and reflash the ESP32 with it)" % now))
+mine = {l.split()[3].split("/")[0] for l in run("ip", "-4", "-o", "addr").splitlines() if len(l.split()) > 3}
+line(bool(bind) and bind in mine, "bind address", "saved %s, this Pi has %s%s" % (bind or "(none)", ", ".join(sorted(mine)) or "(no address)",
+     "" if bind in mine else "  -> deltaota-gateway bind <the address the ESP32 should use>  (and reflash the ESP32 with it)"))
 try:
     cid = rpc("eth_chainId")
     line(cid == "0x7a69", "node", "%s answers, chain %s%s" % (E["RPC"], cid, "" if cid == "0x7a69" else " (expected 0x7a69 = 31337)"))
