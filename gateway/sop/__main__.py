@@ -3,7 +3,7 @@
   preflight   check the environment (tools, inputs, ports)
   sop1        delta footprint and network load           [offline]
   sop2        OSCORE vs standard handshakes              [P3 - not implemented yet]
-  sop3        ledger reliability and revocation          [P1 - not implemented yet]
+  sop3        ledger reliability and revocation          [offline; live part needs Node]
   sop4        Web3 offloading footprint                  [P2 - not implemented yet]
   report      (re)build SOP-REPORT.md from a run directory
   all         preflight + every implemented step + report
@@ -18,12 +18,11 @@ import sys
 from pathlib import Path
 
 from . import report as report_mod
-from . import sop1
+from . import sop1, sop3
 from .runlog import RunContext, StepResult, Table
 
 NOT_IMPLEMENTED = {
     "SOP2": ("OSCORE vs standard handshakes", "P3"),
-    "SOP3": ("Ledger reliability and revocation", "P1"),
     "SOP4": ("Web3 offloading footprint", "P2"),
 }
 
@@ -77,6 +76,9 @@ def open_context(args, create: bool) -> RunContext | None:
 def run_step(ctx: RunContext, name: str, args) -> StepResult:
     if name == "preflight":
         r = step_preflight(ctx, args)
+    elif name == "sop3":
+        r = sop3.run(ctx, trials=args.trials, n_latency=args.n_latency, live_trials=args.live_trials,
+                     chain=not args.no_chain, hardhat_port=args.hardhat_port)
     elif name == "sop1":
         r = sop1.run(ctx, repeats=args.n, firmware_dir=args.firmware_dir, base=args.base, target=args.target,
                      synthetic=not args.no_synthetic)
@@ -90,6 +92,10 @@ def run_step(ctx: RunContext, name: str, args) -> StepResult:
 
 
 def main(argv=None) -> int:
+    # Claims contain symbols (±, ≥) a legacy Windows console codepage cannot encode.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     ap = argparse.ArgumentParser(prog="sop", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("command", choices=["preflight", "sop1", "sop2", "sop3", "sop4", "report", "all"])
     ap.add_argument("--run", help="existing run directory to add to (default: new for steps, latest for report)")
@@ -98,6 +104,11 @@ def main(argv=None) -> int:
     ap.add_argument("--base", help="explicit base firmware image")
     ap.add_argument("--target", help="explicit target firmware image")
     ap.add_argument("--no-synthetic", action="store_true", help="skip the synthetic stress cases")
+    ap.add_argument("--trials", type=int, default=30, help="SOP3: seeded trials per attack (default 30)")
+    ap.add_argument("--n-latency", type=int, default=10, help="SOP3: revoke-to-halt latency trials (default 10)")
+    ap.add_argument("--live-trials", type=int, default=3, help="SOP3: wrong-hash trials on the live chain (default 3)")
+    ap.add_argument("--no-chain", action="store_true", help="SOP3: skip the live chain/gateway part")
+    ap.add_argument("--hardhat-port", type=int, default=18545, help="SOP3: port of the throwaway Hardhat node")
     args = ap.parse_args(argv)
 
     if args.command == "report":

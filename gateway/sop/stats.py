@@ -59,3 +59,18 @@ def fmt_ci(s: dict, digits: int = 2, unit: str = "") -> str:
     """'12.34 ± 0.56 ms (n=30)' for tables and claim sentences."""
     half = f" ± {s['ci95']:.{digits}f}" if s.get("ci95") is not None else ""
     return f"{s['mean']:.{digits}f}{half}{unit} (n={s['n']})"
+
+
+def wilson_interval(successes: int, trials: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson score interval for a proportion (detection rate). Unlike the
+    normal approximation it stays meaningful at 0% and 100%: 30/30 gives a lower
+    bound of ~88.6%, not a misleading 'exactly 100%'."""
+    if trials <= 0:
+        raise ValueError("no trials")
+    if not 0 <= successes <= trials:
+        raise ValueError("successes out of range")
+    p = successes / trials
+    denom = 1 + z * z / trials
+    centre = (p + z * z / (2 * trials)) / denom
+    half = z * math.sqrt(p * (1 - p) / trials + z * z / (4 * trials * trials)) / denom
+    return max(0.0, centre - half), min(1.0, centre + half)
