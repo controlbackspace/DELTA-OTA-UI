@@ -201,7 +201,9 @@ export const DashboardScreen: React.FC = () => {
               type="button"
               disabled={!configText.trim()}
               onClick={() => {
-                if (pipeline.importConsoleConfig(configText)) setConfigText("");
+                void pipeline.importConsoleConfig(configText).then((ok) => {
+                  if (ok) setConfigText("");
+                });
               }}
               className="px-3 py-1 rounded border border-cyan-800/60 bg-cyan-950/30 text-cyan-300 hover:bg-cyan-950/60 disabled:opacity-40 disabled:cursor-not-allowed"
             >

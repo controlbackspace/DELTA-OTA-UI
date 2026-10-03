@@ -63,3 +63,19 @@ test("the exact lines scripts/demo-up.bat prints import cleanly (with and withou
   assert.equal(b.ok && b.config.gatewayHost, "100.101.102.103");
   assert.equal(a.ok && a.skipped.length, 0);
 });
+
+import { localNodeAnswers } from "../src/features/governance/consoleConfig.ts";
+
+const rpcReply = (result: string, ok = true) =>
+  (async () => ({ ok, json: async () => ({ result }) })) as unknown as typeof fetch;
+
+test("the node host is recognised by a local chain-31337 answer; anything else is not", async () => {
+  assert.equal(await localNodeAnswers("http://127.0.0.1:8545", { fetchImpl: rpcReply("0x7a69") }), true);
+  assert.equal(await localNodeAnswers("http://127.0.0.1:8545", { fetchImpl: rpcReply("0x1") }), false, "wrong chain");
+  assert.equal(await localNodeAnswers("http://127.0.0.1:8545", { fetchImpl: rpcReply("0x7a69", false) }), false, "HTTP error");
+  const refused = (async () => { throw new TypeError("fetch failed"); }) as unknown as typeof fetch;
+  assert.equal(await localNodeAnswers("http://127.0.0.1:8545", { fetchImpl: refused }), false, "no local node = a remote author");
+  const hang = ((_u: string, init?: RequestInit) =>
+    new Promise((_r, rej) => init?.signal?.addEventListener("abort", () => rej(new Error("aborted"))))) as unknown as typeof fetch;
+  assert.equal(await localNodeAnswers("http://127.0.0.1:8545", { fetchImpl: hang, timeoutMs: 30 }), false, "timeout");
+});

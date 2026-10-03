@@ -28,6 +28,32 @@ const LOOPBACK = /^https?:\/\/(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?\/?$/
 
 export const isLoopbackRpc = (url: string): boolean => LOOPBACK.test((url || "").trim());
 
+/** Does a node answer chain 31337 at this address? Used to recognise the PC
+ *  that RUNS the node: its console must keep reading 127.0.0.1:8545 instead of
+ *  switching to the Funnel URL that only remote authors need. */
+export async function localNodeAnswers(
+  url: string,
+  opts: { fetchImpl?: typeof fetch; timeoutMs?: number } = {}
+): Promise<boolean> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 2500);
+  try {
+    const res = await (opts.fetchImpl ?? fetch)(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "eth_chainId", params: [] }),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) return false;
+    const body = (await res.json()) as { result?: string };
+    return body.result === "0x7a69";
+  } catch {
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 const PREFIX = "DELTAOTA-CONFIG";
 
 export function buildConsoleConfig(c: ConsoleConfig): string {

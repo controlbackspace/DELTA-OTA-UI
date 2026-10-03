@@ -14,7 +14,7 @@ import {
   releaseActions,
   revokeBlockText,
 } from "../governance/releasePolicy";
-import { parseConsoleConfig } from "../governance/consoleConfig";
+import { isLoopbackRpc, localNodeAnswers, parseConsoleConfig } from "../governance/consoleConfig";
 import { verifyPatchHash, type PatchCheck } from "../governance/patchVerify";
 import { loadGatewayHost, saveGatewayHost, statusUrlFor, useGatewayStatus } from "../deployment/useGatewayStatus";
 import type { OnChainReleaseRecord } from "../wallet/useDesktopWallet";
@@ -924,15 +924,24 @@ export function useFirmwarePipeline() {
 
   /** Apply the DELTAOTA-CONFIG line printed by demo-up (contract, RPC, phone
    *  RPC, gateway address). Returns true when something was applied. */
-  const importConsoleConfig = (text: string): boolean => {
+  const importConsoleConfig = async (text: string): Promise<boolean> => {
     const parsed = parseConsoleConfig(text);
     if (!parsed.ok) {
       addLog(`[Config] ${parsed.error}`, "error");
       return false;
     }
-    const applied = wallet.applyConsoleConfig(parsed.config);
-    if (parsed.config.gatewayHost) {
-      setGatewayHost(parsed.config.gatewayHost);
+    let config = parsed.config;
+    // The line's `rpc` is for REMOTE consoles (the Funnel URL). The PC that runs
+    // the node keeps reading it directly: faster, and its dev signer needs it.
+    if (config.rpc && isLoopbackRpc(wallet.rpcUrl) && (await localNodeAnswers(wallet.rpcUrl))) {
+      const { rpc: _remoteRpc, ...rest } = config;
+      void _remoteRpc;
+      config = rest;
+      addLog(`[Config] This PC runs the node: kept RPC ${wallet.rpcUrl} (the Funnel URL is for the other authors).`, "info");
+    }
+    const applied = wallet.applyConsoleConfig(config);
+    if (config.gatewayHost) {
+      setGatewayHost(config.gatewayHost);
       applied.push("gatewayHost");
     }
     addLog(`[Config] Imported: ${applied.join(", ")}.`, "success");

@@ -128,6 +128,11 @@ these roles from the chain, so every machine shows the same verdict.
    proposed by the others. If the gateway runs on the Pi, set **Gateway address** to
    the Pi's Tailscale IP (or import it with the config line).
 
+The `rpc` in that line is the Funnel URL for **remote** consoles. The PC that runs the
+node keeps reading `http://127.0.0.1:8545` directly (and keeps its Dev signer): Import
+config detects a node answering chain 31337 on that address and skips the `rpc` setting,
+so importing there is harmless. Only the contract, phone RPC and gateway address apply.
+
 **Proposing (the proposer's machine)**
 
 - Set `DELTA_ARTIFACT_HOST` to this PC's Tailscale IP *before* building the release and
