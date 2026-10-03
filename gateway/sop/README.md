@@ -25,7 +25,7 @@ that cannot run is reported as skipped / not implemented; nothing is invented.
 |---|---|---|
 | 1 | delta footprint and network load (real v1.0 -> v1.1 pair + stress cases) | **done** (offline) |
 | 3 | contract suite, attack matrix, live-chain refusals, revoke-to-halt latency + gas | **done** (offline; live part needs Node and a free UDP 5683) |
-| 4 | Web3 offloading footprint (static + heap) | phase P2 |
+| 4 | Web3 offloading: static footprint (offline) + heap/timing (hardware, guarded flash) | **done** (static); hardware part untested on a board |
 | 2 | OSCORE vs standard handshake | phase P3 |
 | 5 | 60-cycle campaign | deferred until the tool is approved |
 
@@ -46,3 +46,22 @@ and the frozen synthetic cases of `simulation/measure_patch.py`.
   releases, and revoke-to-halt latency (revokes sent at a seeded random point of
   the gateway's poll cycle) and gas per call. Needs UDP 5683 free: stop a running
   gateway first. If Node or the port is unavailable, part C is reported as skipped.
+
+## SOP 4 details
+`python -m sop sop4 [--serial COM3 --allow-flash] [--web3-host H --web3-contract 0x... --web3-port 443 --web3-version v1.1] [--factory-log FILE] [--hw-dry-run] [--capture-seconds 90]`
+
+Builds three PlatformIO environments of the firmware project and compares them on the same ESP32 + Wi-Fi base:
+`web3_control` (Wi-Fi only), `factory` (the Delta-OTA updater) and `web3_baseline` (control + HTTPS + Keccak-256 +
+`eth_call` + ABI decode: a read-only **lower bound** of an on-device Web3 client). Output: whole-image sizes, the
+increment of each design over the control against the Class 2 budget (250 KiB flash / 50 KiB RAM), link-map groups
+for the extra flash, and the largest static-RAM symbols.
+
+- **Static part** needs only the PlatformIO toolchain (`pio` on PATH or in `~/.platformio`).
+- **Hardware part** (heap and timing of TLS, which live on the heap, not in static RAM): with `--serial` AND
+  `--allow-flash` it flashes `web3_baseline`, captures `[MEM]`/`[Web3]` lines, and **always restores the factory
+  updater** with `toolslash_device.bat factory COMx`. Flashing replaces the updater, which is why it needs the
+  explicit flag; `--hw-dry-run` prints the plan. The device needs the Wi-Fi in `include/secrets.h` and an HTTPS
+  JSON-RPC endpoint (your Funnel URL: `--web3-host`).
+- `--factory-log` takes an existing serial capture of an update and reports the stream's peak heap.
+- Firmware sources: `src/baseline/` in the firmware project; `tools/host_test_baseline.cpp` tests the Keccak and ABI
+  decoder on the host (`gateway/sop/tests/test_baseline_firmware.py` compares them with web3 when g++ exists).

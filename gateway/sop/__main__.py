@@ -4,7 +4,7 @@
   sop1        delta footprint and network load           [offline]
   sop2        OSCORE vs standard handshakes              [P3 - not implemented yet]
   sop3        ledger reliability and revocation          [offline; live part needs Node]
-  sop4        Web3 offloading footprint                  [P2 - not implemented yet]
+  sop4        Web3 offloading: device footprint          [static: needs PlatformIO; --serial for heap]
   report      (re)build SOP-REPORT.md from a run directory
   all         preflight + every implemented step + report
 
@@ -18,12 +18,11 @@ import sys
 from pathlib import Path
 
 from . import report as report_mod
-from . import sop1, sop3
+from . import footprint, sop1, sop3, sop4
 from .runlog import RunContext, StepResult, Table
 
 NOT_IMPLEMENTED = {
     "SOP2": ("OSCORE vs standard handshakes", "P3"),
-    "SOP4": ("Web3 offloading footprint", "P2"),
 }
 
 
@@ -44,8 +43,12 @@ def step_preflight(ctx: RunContext, args) -> StepResult:
     real = sop1.find_real_pair(args.firmware_dir, args.base, args.target)
     check("Real firmware pair", real is not None,
           f"{real[0]} -> {real[1]}" if real else "release-images/app-v1.0.bin + app-v1.1.bin not found")
-    for tool, why in (("git", "run metadata"), ("pio", "SOP4 footprint (P2)"), ("npx", "SOP3 contract tests (P1)")):
+    for tool, why in (("git", "run metadata"), ("npx", "SOP3 contract tests and chain")):
         check(tool, shutil.which(tool) is not None, why)
+    pio = footprint.find_pio()
+    check("pio (PlatformIO)", pio is not None, pio or "SOP4 footprint builds")
+    check("Firmware project", footprint.find_project(args.firmware_dir) is not None,
+          str(footprint.find_project(args.firmware_dir) or "platformio.ini not found (--firmware-dir)"))
     try:
         import serial  # noqa: F401
         check("pyserial", True, "hardware steps available")
@@ -76,6 +79,11 @@ def open_context(args, create: bool) -> RunContext | None:
 def run_step(ctx: RunContext, name: str, args) -> StepResult:
     if name == "preflight":
         r = step_preflight(ctx, args)
+    elif name == "sop4":
+        r = sop4.run(ctx, firmware_dir=args.firmware_dir, serial=args.serial, allow_flash=args.allow_flash,
+                     web3_host=args.web3_host, web3_port=args.web3_port, web3_contract=args.web3_contract,
+                     web3_version=args.web3_version, factory_log=args.factory_log, hw_dry_run=args.hw_dry_run,
+                     capture_seconds=args.capture_seconds)
     elif name == "sop3":
         r = sop3.run(ctx, trials=args.trials, n_latency=args.n_latency, live_trials=args.live_trials,
                      chain=not args.no_chain, hardhat_port=args.hardhat_port)
@@ -108,6 +116,16 @@ def main(argv=None) -> int:
     ap.add_argument("--n-latency", type=int, default=10, help="SOP3: revoke-to-halt latency trials (default 10)")
     ap.add_argument("--live-trials", type=int, default=3, help="SOP3: wrong-hash trials on the live chain (default 3)")
     ap.add_argument("--no-chain", action="store_true", help="SOP3: skip the live chain/gateway part")
+    ap.add_argument("--serial", help="SOP4: ESP32 serial port (e.g. COM3) for the hardware part")
+    ap.add_argument("--allow-flash", action="store_true",
+                    help="SOP4: permit flashing web3_baseline (replaces the factory updater until restored)")
+    ap.add_argument("--hw-dry-run", action="store_true", help="SOP4: print the hardware plan, flash nothing")
+    ap.add_argument("--web3-host", help="SOP4: RPC host for the on-device ledger check (e.g. your Funnel hostname)")
+    ap.add_argument("--web3-port", type=int, default=443)
+    ap.add_argument("--web3-contract", help="SOP4: DeltaOTA contract address queried by the device")
+    ap.add_argument("--web3-version", default="v1.1", help="SOP4: release tag the device looks up")
+    ap.add_argument("--factory-log", help="SOP4: serial capture of a Delta-OTA update (for the engine's peak heap)")
+    ap.add_argument("--capture-seconds", type=int, default=90, help="SOP4: serial capture length")
     ap.add_argument("--hardhat-port", type=int, default=18545, help="SOP3: port of the throwaway Hardhat node")
     args = ap.parse_args(argv)
 
