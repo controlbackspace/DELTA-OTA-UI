@@ -193,9 +193,9 @@ export const DashboardScreen: React.FC = () => {
             <input
               value={configText}
               onChange={(e) => setConfigText(e.target.value)}
-              placeholder="paste the DELTAOTA-CONFIG line printed by demo-up (contract, RPC, phone RPC, gateway)"
+              aria-label="Console config"
               spellCheck={false}
-              className="flex-1 min-w-0 h-8 px-3 rounded border border-[#1a2a3a] bg-[#070d18] text-slate-200 font-mono placeholder:text-slate-600"
+              className="flex-1 min-w-0 h-8 px-3 rounded border border-[#1a2a3a] bg-[#070d18] text-slate-200 font-mono"
             />
             <button
               type="button"

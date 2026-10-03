@@ -456,7 +456,6 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                       ? "border-rose-500 text-rose-300"
                       : "border-[#1a2a3a] text-cyan-300 focus:border-cyan-500"
                   }`}
-                  placeholder="0x445bd590A01fe6709d4f13A8F579c1e4846921db"
                 />
                 {draftAddress.trim() && !draftValid && (
                   <p className="text-[11px] text-rose-400">
@@ -492,7 +491,6 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                   value={draftRpcUrl}
                   onChange={(e) => setDraftRpcUrl(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-[#1a2a3a] bg-[#05080f] font-mono text-xs text-cyan-300 focus:outline-none focus:border-cyan-500"
-                  placeholder="http://127.0.0.1:8545"
                 />
                 {rpcError && (
                   <p className="text-[11px] text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50">
@@ -523,7 +521,6 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                   value={draftPhoneRpcUrl}
                   onChange={(e) => setDraftPhoneRpcUrl(e.target.value)}
                   className="w-full px-3 py-2 rounded-lg border border-[#1a2a3a] bg-[#05080f] font-mono text-xs text-cyan-300 focus:outline-none focus:border-cyan-500"
-                  placeholder="https://<random>.trycloudflare.com"
                 />
                 {phoneRpcError && (
                   <p className="text-[11px] text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50">
