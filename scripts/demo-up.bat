@@ -13,6 +13,10 @@ REM dev accounts are unlocked. Preferred: Tailscale Funnel = FIXED URL
 REM (https://<laptop>.<tailnet>.ts.net, set once in MetaMask). Fallback when
 REM Tailscale is not installed: cloudflared quick tunnel (new URL every run).
 setlocal EnableDelayedExpansion
+REM Double-clicked from Explorer (cmd /c): keep this window open at the end so the
+REM banner (contract, phone RPC, DELTAOTA-CONFIG line) can be read. NOPAUSE=1 disables.
+set DBL=
+if not defined NOPAUSE echo %cmdcmdline% | findstr /i /c:" /c " >nul && set DBL=1
 cd /d "%~dp0.."
 set ROOT=%CD%
 set ENVDIR=%TEMP%\delta-ota-demo
@@ -151,6 +155,12 @@ echo [6/6] Starting SecureOTA desktop app (window: DeltaOTA-App)...
 REM Inherited by the app window: the renderer reads it as the phone RPC.
 set "DELTA_PHONE_RPC_URL=%TUNNEL%"
 start "DeltaOTA-App" cmd /k "cd /d %ROOT%\desktop && npm start"
+if defined DBL (
+  echo.
+  echo Demo is up. The DELTAOTA-CONFIG line above is also in %ENVDIR%\console-config.txt
+  echo Press any key to close this window ^(the demo windows stay open^).
+  pause >nul
+)
 endlocal
 exit /b 0
 
