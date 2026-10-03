@@ -24,3 +24,7 @@ setup.log
 .vscode/
 .idea/
 .env
+# PyInstaller regenerates the spec on every build (build-exe.bat passes flags, not a spec)
+gateway/*.spec
+# editor scratch files
+tempCodeRunnerFile.py
