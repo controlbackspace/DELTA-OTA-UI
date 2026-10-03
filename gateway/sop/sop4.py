@@ -152,6 +152,7 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
     except Exception as e:                                # nm missing / unreadable map: report, don't guess
         res.notes.append(f"Engine symbol attribution unavailable: {e}")
     if eng:
+        res.data["engine"] = eng                             # SOP2 reads this
         res.tables.append(Table(
             "Delta-OTA engine alone (symbol-attributed, factory build)", ["Item", "Size"],
             [["Engine code (flash)", f"{eng['flash']:,} B across {eng['symbols']} symbols"],
@@ -234,6 +235,15 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
 
     if hw_parsed:
         _hardware_tables(res, hw_parsed)
+        try:                                                 # structured copy for SOP2
+            pk = peak_heap(hw_parsed["mem"], "web3-start", "web3-end")
+            okr = [w for w in hw_parsed["web3"] if w["ok"]]
+            res.data["web3_hw"] = {
+                "peak_heap_bytes": pk["peak_bytes"], "peak_exact": pk["exact"], "runs_ok": len(okr),
+                "tls_connect_ms": summarize([w["tls_connect_ms"] for w in okr]) if okr else None,
+            }
+        except ValueError:
+            pass
     if factory_log:
         try:
             lp = parse_log(Path(factory_log).read_text(encoding="utf-8", errors="replace"))

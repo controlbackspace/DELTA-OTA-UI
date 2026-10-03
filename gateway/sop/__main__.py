@@ -2,7 +2,7 @@
 
   preflight   check the environment (tools, inputs, ports)
   sop1        delta footprint and network load           [offline]
-  sop2        OSCORE vs standard handshakes              [P3 - not implemented yet]
+  sop2        OSCORE-style framing vs standard handshake [offline; device numbers if sop4/--factory-log]
   sop3        ledger reliability and revocation          [offline; live part needs Node]
   sop4        Web3 offloading: device footprint          [static: needs PlatformIO; --serial for heap]
   report      (re)build SOP-REPORT.md from a run directory
@@ -18,11 +18,10 @@ import sys
 from pathlib import Path
 
 from . import report as report_mod
-from . import footprint, sop1, sop3, sop4
+from . import footprint, sop1, sop2, sop3, sop4
 from .runlog import RunContext, StepResult, Table
 
 NOT_IMPLEMENTED = {
-    "SOP2": ("OSCORE vs standard handshakes", "P3"),
 }
 
 
@@ -79,6 +78,9 @@ def open_context(args, create: bool) -> RunContext | None:
 def run_step(ctx: RunContext, name: str, args) -> StepResult:
     if name == "preflight":
         r = step_preflight(ctx, args)
+    elif name == "sop2":
+        r = sop2.run(ctx, ops=args.ops, handshakes=args.handshakes, firmware_dir=args.firmware_dir,
+                     base=args.base, target=args.target, factory_log=args.factory_log)
     elif name == "sop4":
         r = sop4.run(ctx, firmware_dir=args.firmware_dir, serial=args.serial, allow_flash=args.allow_flash,
                      web3_host=args.web3_host, web3_port=args.web3_port, web3_contract=args.web3_contract,
@@ -126,6 +128,8 @@ def main(argv=None) -> int:
     ap.add_argument("--web3-version", default="v1.1", help="SOP4: release tag the device looks up")
     ap.add_argument("--factory-log", help="SOP4: serial capture of a Delta-OTA update (for the engine's peak heap)")
     ap.add_argument("--capture-seconds", type=int, default=90, help="SOP4: serial capture length")
+    ap.add_argument("--ops", type=int, default=2000, help="SOP2: timed AES-CCM operations per measurement (default 2000)")
+    ap.add_argument("--handshakes", type=int, default=50, help="SOP2: TLS handshakes to time (default 50)")
     ap.add_argument("--hardhat-port", type=int, default=18545, help="SOP3: port of the throwaway Hardhat node")
     args = ap.parse_args(argv)
 
@@ -138,7 +142,8 @@ def main(argv=None) -> int:
         return 0
 
     ctx = open_context(args, create=True)
-    names = ["preflight", "sop1", "sop2", "sop3", "sop4"] if args.command == "all" else [args.command]
+    # sop2 last: it reuses the device numbers SOP4 stores in this run
+    names = ["preflight", "sop1", "sop3", "sop4", "sop2"] if args.command == "all" else [args.command]
     failed = False
     for name in names:
         r = run_step(ctx, name, args)
