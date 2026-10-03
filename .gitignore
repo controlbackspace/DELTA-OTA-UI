@@ -15,6 +15,7 @@ release/
 
 # Runtime & build artifacts
 artifacts/
+sop-results/
 blockchain/cache/
 setup.log
 
