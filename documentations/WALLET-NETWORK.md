@@ -137,19 +137,20 @@ so importing there is harmless. Only the contract, phone RPC and gateway address
 
 - Set `DELTA_ARTIFACT_HOST` to this PC's Tailscale IP *before* building the release and
   keep `python gateway\serve_artifacts.py` running (`demo-up` starts it). The URL
-  anchored on-chain points at your PC, and the Pi and the other authors download from it.
+  anchored on-chain points at your PC, and the gateway downloads the patch from it.
+  The gateway is the one that verifies the patch against the on-chain SHA-256 golden
+  hash before it serves anything; how authors share or inspect a patch among
+  themselves is up to them.
 
 **Approving (the other authors)**
 
-- Press **Verify** on the row (or just **Approve**: it verifies first). The console
-  downloads the patch from the on-chain URL and compares its SHA-256 with the on-chain
-  golden hash. A **mismatch blocks** the approval. If the proposer's PC cannot be
-  reached the console warns and asks for an explicit "approve without verifying".
-- If another author approved a moment earlier you get "Already live" and the row
-  refreshes; nothing is lost.
+- Press **Approve** on the pending row. The console reads the release fresh from the
+  chain first. If another author approved a moment earlier you get "Already live" and the
+  row refreshes; nothing is lost.
 
-**Following a release** is read-only and open to everyone: press **Follow** on a row
-(chain, gateway and device stages).
+**Tracking** is read-only and open to every author: **Track** in the header follows this
+console's staged target, or, on any other author's console, the most recently proposed
+version. It needs no wallet and no proposer role.
 
 **Revoking** works for any of the three authors, on a pending or a live release. A revoked
 version can be proposed again after the fix (a new round: the earlier signatures do not

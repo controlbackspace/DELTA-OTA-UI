@@ -15,7 +15,6 @@ import {
   revokeBlockText,
 } from "../governance/releasePolicy";
 import { isLoopbackRpc, localNodeAnswers, parseConsoleConfig } from "../governance/consoleConfig";
-import { verifyPatchHash, type PatchCheck } from "../governance/patchVerify";
 import { loadGatewayHost, saveGatewayHost, statusUrlFor, useGatewayStatus } from "../deployment/useGatewayStatus";
 import type { OnChainReleaseRecord } from "../wallet/useDesktopWallet";
 import {
@@ -183,6 +182,9 @@ export function useFirmwarePipeline() {
   walletAddressRef.current = wallet.address;
   // Has the connected author already signed each pending release (this round)?
   const [signedByMe, setSignedByMe] = useState<Record<string, boolean>>({});
+  // Most recently proposed version on this contract: what tracking follows when
+  // this console has no staged target (every author can track it, read-only).
+  const [latestProposed, setLatestProposed] = useState<string | null>(null);
   const proposersRef = useRef(proposers);
   proposersRef.current = proposers;
 
@@ -267,6 +269,7 @@ export function useFirmwarePipeline() {
     setReleases([]);
     setProposers({});
     setSignedByMe({});
+    setLatestProposed(null);
     setChainSynced(false);
     let cancelled = false;
     const syncOnce = async () => {
@@ -282,6 +285,11 @@ export function useFirmwarePipeline() {
         if (cancelled) return;
         if (proposals) {
           const newest = newestProposals(proposals);
+          let latest: { version: string; blockNumber: number; logIndex: number } | null = null;
+          for (const e of newest.values()) {
+            if (!latest || e.blockNumber > latest.blockNumber || (e.blockNumber === latest.blockNumber && e.logIndex > latest.logIndex)) latest = e;
+          }
+          setLatestProposed(latest ? latest.version : null);
           for (const e of newest.values()) {
             if (!candidates.some((c) => c.toLowerCase() === e.version.toLowerCase())) candidates.push(e.version);
           }
@@ -594,34 +602,6 @@ export function useFirmwarePipeline() {
     }
   };
 
-  // Approver's own check of what they are about to sign: download the patch
-  // from the on-chain URL and compare its SHA-256 with the on-chain golden
-  // hash. Stored per version with the hash it was run against, so a version
-  // that is re-proposed with a new hash is never shown as already verified.
-  type StoredPatchCheck = PatchCheck & { forHash: string; checking?: boolean };
-  const [patchChecks, setPatchChecks] = useState<Record<string, StoredPatchCheck>>({});
-  const runPatchCheck = async (version: string): Promise<PatchCheck> => {
-    const key = version.toLowerCase();
-    const rec = await wallet.fetchRelease(version); // fresh url + hash, not the 4 s cache
-    if (!rec) {
-      const res: PatchCheck = { status: "unreachable", detail: "Could not read the release from the chain." };
-      setPatchChecks((p) => ({ ...p, [key]: { ...res, forHash: "" } }));
-      return res;
-    }
-    setPatchChecks((p) => ({
-      ...p,
-      [key]: { status: "unreachable", detail: "Checking…", forHash: rec.goldenHash, checking: true },
-    }));
-    addLog(`[Verify] Downloading ${version} patch from ${rec.ipfsUrl || "(no URL on-chain)"} to compare its SHA-256 with the on-chain hash...`, "info");
-    const res = await verifyPatchHash(rec.ipfsUrl, rec.goldenHash);
-    setPatchChecks((p) => ({ ...p, [key]: { ...res, forHash: rec.goldenHash } }));
-    addLog(
-      `[Verify] ${version}: ${res.status.toUpperCase()} — ${res.detail}`,
-      res.status === "verified" ? "success" : res.status === "mismatch" ? "error" : "warning"
-    );
-    return res;
-  };
-
   // Fresh chain facts for one release - never decide on the 4 s poll cache,
   // because another author may have approved or revoked a moment ago.
   const readReleaseFacts = async (version: string) => {
@@ -700,7 +680,8 @@ export function useFirmwarePipeline() {
   /**
    * Action: "Approve" ledger button - the second signature (2-of-3). Any
    * authorized developer who is not the proposer and has not signed; decided
-   * from fresh chain facts, gated by the patch-hash check.
+   * from fresh chain facts. (The SHA-256 check of the payload is the gateway's
+   * job; how authors inspect or share a patch is up to them.)
    * Formats and executes: approveRelease(bytes32 version)
    */
   const handleApproveUpdate = async (version: string) => {
@@ -720,25 +701,6 @@ export function useFirmwarePipeline() {
     if (!verdict.canApprove && verdict.approveBlock) {
       addLog(`[Governance] ${approveBlockText(verdict.approveBlock)}`, verdict.approveBlock === "already-live" ? "info" : "error");
       return;
-    }
-
-    // Patch gate: a mismatch means the URL does not serve what the proposer
-    // anchored - never sign it. If the host is simply unreachable the author
-    // may still approve, but only after an explicit confirmation.
-    const check = await runPatchCheck(version);
-    if (check.status === "mismatch") {
-      addLog(`[Governance] Approval BLOCKED — ${check.detail}`, "error");
-      return;
-    }
-    if (check.status === "unreachable") {
-      const go = window.confirm(
-        `Could not verify the ${version} patch:\n\n${check.detail}\n\nApprove WITHOUT verifying it?`
-      );
-      if (!go) {
-        addLog(`[Governance] Approval of ${version} cancelled — the patch could not be verified.`, "warning");
-        return;
-      }
-      addLog(`[Governance] Approving ${version} WITHOUT patch verification (author override).`, "warning");
     }
 
     addLog(`[Governance] Signing the second signature for ${version} (${approvalsLabel(fresh.approvalCount)} now)...`, "info");
@@ -776,10 +738,9 @@ export function useFirmwarePipeline() {
 
   // Deploy is the proposer's action: only the account that called
   // proposeRelease for this version (per the on-chain event) may trigger it.
-  // The followed version defaults to the staged target (proposer's console) and
-  // can be any ledger version, so the other authors follow it too, read-only.
-  const [trackedVersion, setTrackedVersion] = useState<string | null>(null);
-  const deployVersion = trackedVersion ?? (targetFile ? deriveVersionTag(targetFile.name) : "v1.1");
+  // Tracking follows this console's staged target (the proposer's console) or,
+  // on any other author's console, the most recently proposed version.
+  const deployVersion = targetFile ? deriveVersionTag(targetFile.name) : (latestProposed ?? "v1.1");
   const deployProposer = proposers[deployVersion.toLowerCase()] ?? null;
   const isDeployProposer =
     deployProposer !== null &&
@@ -889,22 +850,6 @@ export function useFirmwarePipeline() {
     }
   }, [isTracking, updateState, gateway.online, trackRecord, gs, deployVersion, statusUrl, addLog]);
 
-  /** One-click follow from a ledger row: pick the version and start the
-   *  read-only tracker. Open to every author - no wallet or role needed. */
-  const followRelease = (version: string) => {
-    if (!releases.some((r) => r.version === version)) {
-      addLog(`[Tracker] ${version} is not on this contract (yet).`, "error");
-      return;
-    }
-    setTrackedVersion(version);
-    if (isTracking) {
-      addLog(`[Tracker] Now following ${version} (read-only).`, "info");
-    } else {
-      addLog(`[Tracker] Following ${version} (read-only): chain → gateway → device.`, "info");
-      setIsTracking(true);
-    }
-  };
-
   const toggleTracking = () => {
     if (isTracking) {
       setIsTracking(false);
@@ -915,7 +860,7 @@ export function useFirmwarePipeline() {
     // release to exist on this contract. No wallet, proposer role or finished
     // wizard is required.
     if (!trackRecord) {
-      addLog(`[Tracker] ${deployVersion} is not on this contract yet — pick a version from the ledger (or propose it first).`, "error");
+      addLog(`[Tracker] ${deployVersion} is not on this contract yet — propose it first or check the contract address.`, "error");
       return;
     }
     addLog(`[Tracker] Tracking ${deployVersion} (read-only): chain → gateway (${statusUrl}) → device.`, "info");
@@ -991,12 +936,7 @@ export function useFirmwarePipeline() {
     setGatewayHost,
     trackRecord,
     deviceBlock,
-    trackedVersion,
-    selectTrackedVersion: setTrackedVersion,
-    followRelease,
     signedByMe,
-    patchChecks,
-    runPatchCheck,
     importConsoleConfig,
   };
 }

@@ -13,13 +13,13 @@ import { truncateAddress } from "../../lib/web3Payloads";
 export const DashboardScreen: React.FC = () => {
   const pipeline = useFirmwarePipeline();
 
-  // Following a release is read-only and open to every author: it only needs
-  // the release to exist on this contract. (The five wizard steps are the
-  // proposer's path and gate nothing here.)
+  // Tracking is read-only and open to every author: it only needs the release
+  // to exist on this contract. (The five wizard steps are the proposer's path
+  // and gate nothing here.)
   const canTrack = pipeline.isTracking || !!pipeline.trackRecord;
   const trackBlockedReason =
     !pipeline.isTracking && !pipeline.trackRecord
-      ? `${pipeline.deployVersion} is not on this contract yet — use Follow on a ledger row, or propose it first`
+      ? `${pipeline.deployVersion} is not on this contract yet — propose it first, or check the contract address`
       : undefined;
   const [configText, setConfigText] = React.useState("");
 
@@ -55,7 +55,7 @@ export const DashboardScreen: React.FC = () => {
           <button
             type="button"
             onClick={() => pipeline.wallet.openCustomQrModal()}
-            className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-cyan-800/60 bg-cyan-950/30 hover:bg-cyan-950/60 text-cyan-300 text-xs transition-colors"
+            className="flex items-center gap-2 h-9 px-4 rounded-lg border border-cyan-800/60 bg-cyan-950/30 hover:bg-cyan-950/60 text-cyan-300 text-xs transition-colors"
           >
             <QrCode className="w-3.5 h-3.5 text-cyan-400" />
             <span>
@@ -73,7 +73,7 @@ export const DashboardScreen: React.FC = () => {
             onClick={pipeline.toggleTracking}
             disabled={!canTrack}
             title={trackBlockedReason}
-            className={`flex items-center gap-2 px-5 py-2 rounded border text-sm transition-all duration-200 ${
+            className={`flex items-center gap-2 h-9 px-4 rounded-lg border text-sm transition-all duration-200 ${
               canTrack
                 ? "border-cyan-500/70 bg-cyan-500/10 text-cyan-300 hover:bg-cyan-500/20 hover:border-cyan-400 cursor-pointer"
                 : "border-slate-800 bg-slate-900/30 text-slate-600 cursor-not-allowed"
@@ -188,14 +188,14 @@ export const DashboardScreen: React.FC = () => {
 
           {/* Per-run console settings: any author's console is configured from the
               single DELTAOTA-CONFIG line that demo-up prints. */}
-          <div className="shrink-0 flex items-center gap-2 px-6 py-2 border-b border-[#1a2a3a] bg-[#060c18] text-[11px] font-sans">
+          <div className="shrink-0 flex items-center gap-3 px-6 py-3 border-b border-[#1a2a3a] bg-[#060c18] text-[11px] font-sans">
             <span className="text-slate-500 whitespace-nowrap">Console config</span>
             <input
               value={configText}
               onChange={(e) => setConfigText(e.target.value)}
               placeholder="paste the DELTAOTA-CONFIG line printed by demo-up (contract, RPC, phone RPC, gateway)"
               spellCheck={false}
-              className="flex-1 min-w-0 px-2 py-1 rounded border border-[#1a2a3a] bg-[#070d18] text-slate-200 font-mono placeholder:text-slate-600"
+              className="flex-1 min-w-0 h-8 px-3 rounded border border-[#1a2a3a] bg-[#070d18] text-slate-200 font-mono placeholder:text-slate-600"
             />
             <button
               type="button"
@@ -205,7 +205,7 @@ export const DashboardScreen: React.FC = () => {
                   if (ok) setConfigText("");
                 });
               }}
-              className="px-3 py-1 rounded border border-cyan-800/60 bg-cyan-950/30 text-cyan-300 hover:bg-cyan-950/60 disabled:opacity-40 disabled:cursor-not-allowed"
+              className="h-8 px-4 rounded border border-cyan-800/60 bg-cyan-950/30 text-cyan-300 hover:bg-cyan-950/60 disabled:opacity-40 disabled:cursor-not-allowed whitespace-nowrap"
             >
               Import config
             </button>
@@ -233,14 +233,10 @@ export const DashboardScreen: React.FC = () => {
             releases={pipeline.releases}
             onExecuteKillSwitch={pipeline.handleExecuteKillSwitch}
             onApproveUpdate={pipeline.handleApproveUpdate}
-            onVerifyPatch={(v) => void pipeline.runPatchCheck(v)}
-            onTrack={pipeline.followRelease}
-            trackedVersion={pipeline.isTracking ? pipeline.deployVersion : null}
             proposerByVersion={pipeline.proposers}
             connectedAddress={pipeline.wallet.address}
             authorized={pipeline.wallet.chainAuthorized}
             signedByMe={pipeline.signedByMe}
-            patchChecks={pipeline.patchChecks}
           />
 
           {/* Terminal Execution Window */}

@@ -1,5 +1,5 @@
 import * as React from "react";
-import { BookOpen, AlertTriangle, ShieldCheck, ShieldX, Eye, FileCheck } from "lucide-react";
+import { BookOpen, AlertTriangle, ShieldCheck, ShieldX } from "lucide-react";
 import { CodeBadge } from "../atoms/CodeBadge";
 import { StatusPill } from "../atoms/StatusPill";
 import { cn } from "../../lib/utils";
@@ -13,7 +13,6 @@ import {
   sameAddress,
   statusLabel,
 } from "../../features/governance/releasePolicy";
-import type { PatchCheck } from "../../features/governance/patchVerify";
 
 export interface LedgerRelease {
   version: string;
@@ -22,23 +21,14 @@ export interface LedgerRelease {
   maxApprovals: number;
   isLive: boolean;
   isRevoked: boolean;
-  /** Download URL anchored on-chain by the proposer (patch host). */
+  /** Download URL anchored on-chain by the proposer. */
   ipfsUrl?: string;
 }
-
-/** A patch check is only valid for the hash it was run against. */
-export type StoredPatchCheck = PatchCheck & { forHash: string; checking?: boolean };
 
 export interface LedgerDeploymentsTableProps {
   releases: LedgerRelease[];
   onExecuteKillSwitch: (version: string) => void;
   onApproveUpdate: (version: string) => void;
-  /** Download the patch from the on-chain URL and compare it with the golden hash. */
-  onVerifyPatch?: (version: string) => void;
-  /** Follow a release's deployment (read-only, open to every author). */
-  onTrack?: (version: string) => void;
-  /** Version currently followed by the tracker. */
-  trackedVersion?: string | null;
   /** Lowercased proposer of the newest proposal round, per lowercased version. */
   proposerByVersion?: Record<string, string>;
   /** Currently connected wallet (any case). */
@@ -47,65 +37,21 @@ export interface LedgerDeploymentsTableProps {
   authorized?: boolean | null;
   /** hasSigned for the connected wallet, per lowercased version (pending releases). */
   signedByMe?: Record<string, boolean>;
-  patchChecks?: Record<string, StoredPatchCheck>;
 }
 
-const hostOf = (url?: string): string => {
-  if (!url) return "—";
-  try {
-    return new URL(url).host;
-  } catch {
-    return url.slice(0, 24);
-  }
-};
-
-const PatchCell: React.FC<{
-  release: LedgerRelease;
-  check?: StoredPatchCheck;
-  onVerify?: (v: string) => void;
-}> = ({ release, check, onVerify }) => {
-  const valid = check && check.forHash === release.goldenHash ? check : undefined;
-  let badge: React.ReactNode = <span className="text-slate-600">not checked</span>;
-  if (valid?.checking) badge = <span className="text-cyan-400">checking…</span>;
-  else if (valid?.status === "verified") badge = <span className="text-emerald-400" title={valid.detail}>verified</span>;
-  else if (valid?.status === "mismatch") badge = <span className="text-rose-400 font-semibold" title={valid.detail}>HASH MISMATCH</span>;
-  else if (valid?.status === "unreachable") badge = <span className="text-amber-400" title={valid.detail}>unreachable</span>;
-
-  return (
-    <div className="flex flex-col items-start gap-1 text-[10px]">
-      <span className="text-slate-500 max-w-[160px] truncate" title={release.ipfsUrl}>
-        {hostOf(release.ipfsUrl)}
-      </span>
-      <span className="flex items-center gap-2">
-        {badge}
-        {onVerify && release.ipfsUrl && !valid?.checking && (
-          <button
-            type="button"
-            onClick={() => onVerify(release.version)}
-            title="Download the patch from the on-chain URL and compare its SHA-256 with the on-chain golden hash."
-            className="flex items-center gap-1 px-1.5 py-0.5 rounded border border-cyan-800/40 text-cyan-400 hover:bg-cyan-950/30"
-          >
-            <FileCheck className="w-3 h-3" />
-            Verify
-          </button>
-        )}
-      </span>
-    </div>
-  );
-};
+// One size for every action in the row: equal height and width, so the buttons
+// line up from row to row whichever mix of Approve / Kill / status shows.
+const ACTION =
+  "inline-flex items-center justify-center gap-1.5 h-8 w-[112px] shrink-0 rounded border font-sans text-[10px] whitespace-nowrap transition-colors";
 
 export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
   releases,
   onExecuteKillSwitch,
   onApproveUpdate,
-  onVerifyPatch,
-  onTrack,
-  trackedVersion = null,
   proposerByVersion = {},
   connectedAddress = null,
   authorized = null,
   signedByMe = {},
-  patchChecks = {},
 }) => {
   return (
     <div className="border-b border-[#1a2a3a] bg-[#060c18]">
@@ -128,7 +74,6 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
               <th className="text-left px-6 py-3 font-medium">Golden Hash</th>
               <th className="text-center px-6 py-3 font-medium">Approvals</th>
               <th className="text-center px-6 py-3 font-medium">Status</th>
-              <th className="text-left px-6 py-3 font-medium">Patch</th>
               <th className="text-right px-6 py-3 font-medium">Actions</th>
             </tr>
           </thead>
@@ -145,12 +90,10 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
                 },
                 { address: connectedAddress, authorized, hasSigned: signedByMe[key] ?? null }
               );
-              const check = patchChecks[key];
-              const mismatch = check && check.forHash === release.goldenHash && check.status === "mismatch";
-              const pendingChip = (text: string, title: string) => (
+              const statusChip = (text: string, title: string) => (
                 <span
                   title={title}
-                  className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-slate-800 bg-slate-900/40 text-slate-500 text-[10px] cursor-default"
+                  className={cn(ACTION, "border-slate-800 bg-slate-900/40 text-slate-500 cursor-default")}
                 >
                   <ShieldCheck className="w-3 h-3" />
                   {text}
@@ -203,46 +146,24 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
                     )}
                   </td>
                   <td className="px-6 py-4">
-                    <PatchCell release={release} check={check} onVerify={onVerifyPatch} />
-                  </td>
-                  <td className="px-6 py-4 text-right">
-                    <div className="flex items-center justify-end gap-2 flex-wrap">
-                      {actions.canApprove && !mismatch && (
+                    <div className="flex items-center justify-end gap-2 flex-nowrap">
+                      {actions.canApprove && (
                         <button
                           type="button"
                           onClick={() => onApproveUpdate(release.version)}
-                          title="Give the second signature. The console first checks the patch against the on-chain hash."
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-emerald-800/40 bg-emerald-950/20 text-emerald-400 hover:bg-emerald-950/40 transition-all text-[10px]"
+                          title="Give the second signature (2-of-3)."
+                          className={cn(ACTION, "border-emerald-800/40 bg-emerald-950/20 text-emerald-400 hover:bg-emerald-950/40")}
                         >
                           <ShieldCheck className="w-3 h-3" />
                           Approve
                         </button>
                       )}
-                      {actions.canApprove && mismatch &&
-                        pendingChip("Blocked: hash mismatch", check?.detail ?? "The patch does not match the on-chain hash.")}
                       {!actions.canApprove && actions.approveBlock === "is-proposer" &&
-                        pendingChip("Awaiting another developer", approveBlockText("is-proposer"))}
+                        statusChip("Awaiting others", approveBlockText("is-proposer"))}
                       {!actions.canApprove && actions.approveBlock === "already-signed" &&
-                        pendingChip("You signed - awaiting threshold", approveBlockText("already-signed"))}
+                        statusChip("You signed", approveBlockText("already-signed"))}
                       {!actions.canApprove && actions.approveBlock === "already-live" &&
-                        pendingChip("Approvals complete", approveBlockText("already-live"))}
-
-                      {onTrack && (
-                        <button
-                          type="button"
-                          onClick={() => onTrack(release.version)}
-                          title="Follow this release through chain, gateway and device (read-only)."
-                          className={cn(
-                            "flex items-center gap-1.5 px-3 py-1.5 rounded border text-[10px] transition-all",
-                            trackedVersion === release.version
-                              ? "border-cyan-500/60 bg-cyan-950/40 text-cyan-300"
-                              : "border-cyan-800/40 bg-cyan-950/10 text-cyan-400 hover:bg-cyan-950/30"
-                          )}
-                        >
-                          <Eye className="w-3 h-3" />
-                          {trackedVersion === release.version ? "Followed" : "Follow"}
-                        </button>
-                      )}
+                        statusChip("Approved", approveBlockText("already-live"))}
 
                       {!release.isRevoked && (
                         <button
@@ -263,14 +184,17 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
                             )
                               onExecuteKillSwitch(release.version);
                           }}
-                          className="flex items-center gap-1.5 px-3 py-1.5 rounded border border-rose-800/40 bg-rose-950/20 text-rose-400 hover:bg-rose-950/40 transition-all text-[10px] disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-950/20"
+                          className={cn(
+                            ACTION,
+                            "border-rose-800/40 bg-rose-950/20 text-rose-400 hover:bg-rose-950/40 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-rose-950/20"
+                          )}
                         >
                           <ShieldX className="w-3 h-3" />
                           Kill
                         </button>
                       )}
                       {release.isRevoked && (
-                        <span className="flex items-center gap-1.5 px-3 py-1.5 text-slate-600 text-[10px]">
+                        <span className={cn(ACTION, "border-transparent text-slate-600 cursor-default")}>
                           <AlertTriangle className="w-3 h-3" />
                           Revoked
                         </span>
@@ -282,7 +206,7 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
             })}
             {releases.length === 0 && (
               <tr>
-                <td colSpan={7} className="px-6 py-8 text-center text-slate-600 font-sans text-sm">
+                <td colSpan={6} className="px-6 py-8 text-center text-slate-600 font-sans text-sm">
                   No firmware releases found on the ledger.
                 </td>
               </tr>
