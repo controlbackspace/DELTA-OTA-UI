@@ -93,7 +93,64 @@ MetaMask always has a chain it can approve; the app then steers the phone to
 chain other than 31337. `demo-up.bat` pre-fills the Phone RPC with the
 current tunnel URL; on a manual bring-up, paste it in Contract Config.
 
-## 6. Cleanup
+## 6. Several authors, one chain (3 developers, 2-of-3)
+
+Any of the three authorized developers can run the console on their own
+machine against the same chain. There are no fixed device roles: for each
+release exactly one author is the **proposer** (signature 1), any *other*
+author who has not signed gives the second signature (so only **one**
+approval is needed; after that the third author just watches and may still
+revoke), and every author can revoke or follow a release. The console reads
+these roles from the chain, so every machine shows the same verdict.
+
+**Who runs what**
+
+| | Chain host (runs `demo-up`) | Any author's console |
+|---|---|---|
+| Node, Funnel, rpc_guard | yes | no |
+| Console | yes (RPC `127.0.0.1:8545`) | RPC = the Funnel URL |
+| Signs with | own wallet (phone/extension) or Dev signer (local node only) | **own** wallet (phone/extension) only |
+| Builds delta + serves the patch | only for releases it proposes | only for releases it proposes |
+
+**Setting up author 2 / author 3**
+
+1. Run the console (the Electron app, or the plain web page with `npm run dev`
+   in `ui/secureota-ui`; Electron is only needed on the machine that builds deltas).
+2. `demo-up` prints a line `DELTAOTA-CONFIG {...}` (also saved in
+   `%TEMP%\delta-ota-demo\console-config.txt`). Paste it into **Console config** and press **Import config**. It sets the
+   contract address (changes on every `demo-up`), the RPC (the Funnel URL), the
+   phone RPC and, if `DELTA_GATEWAY_HOST` was set when `demo-up` ran, the gateway address.
+3. Connect **your own** wallet whose address is one of the three authorized
+   developers and press **Verify ownership**. The Dev signer tab disappears on a remote
+   RPC on purpose: `rpc_guard` refuses `eth_sendTransaction`/`eth_accounts`, so only your
+   wallet can sign.
+4. The ledger fills from `ReleaseProposed` events within ~4 s, including versions
+   proposed by the others. If the gateway runs on the Pi, set **Gateway address** to
+   the Pi's Tailscale IP (or import it with the config line).
+
+**Proposing (the proposer's machine)**
+
+- Set `DELTA_ARTIFACT_HOST` to this PC's Tailscale IP *before* building the release and
+  keep `python gateway\serve_artifacts.py` running (`demo-up` starts it). The URL
+  anchored on-chain points at your PC, and the Pi and the other authors download from it.
+
+**Approving (the other authors)**
+
+- Press **Verify** on the row (or just **Approve**: it verifies first). The console
+  downloads the patch from the on-chain URL and compares its SHA-256 with the on-chain
+  golden hash. A **mismatch blocks** the approval. If the proposer's PC cannot be
+  reached the console warns and asks for an explicit "approve without verifying".
+- If another author approved a moment earlier you get "Already live" and the row
+  refreshes; nothing is lost.
+
+**Following a release** is read-only and open to everyone: press **Follow** on a row
+(chain, gateway and device stages).
+
+**Revoking** works for any of the three authors, on a pending or a live release. A revoked
+version can be proposed again after the fix (a new round: the earlier signatures do not
+carry over).
+
+## 7. Cleanup
 
 Run `scripts\demo-down.bat`: it closes the demo windows and runs
 `tailscale funnel reset`, so nothing is publicly reachable between demos.

@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { ethers } from "ethers";
 import { createAppKit } from "@reown/appkit/react";
 import { defineChain, sepolia } from "@reown/appkit/networks";
@@ -11,8 +11,11 @@ import {
 import {
   formatVersionBytes32,
   formatGoldenHashBytes32,
+  parseVersionBytes32,
   truncateAddress,
 } from "../../lib/web3Payloads";
+import type { ProposalEvent } from "../governance/releasePolicy";
+import { isLoopbackRpc, type ConsoleConfig } from "../governance/consoleConfig";
 import { getDesktopBridge } from "../../lib/desktop";
 
 // WalletConnect Project ID for Reown AppKit (public client identifier —
@@ -947,6 +950,88 @@ export function useDesktopWallet() {
     [contractAddress, rpcUrl]
   );
 
+  /**
+   * Every proposal ever made on this contract, from ReleaseProposed events -
+   * the only on-chain enumeration of versions (the contract has no list
+   * getter). Incremental: only blocks added since the previous call are
+   * scanned, and the cache is dropped when the contract/endpoint changes or
+   * the node was restarted (the last scanned block's hash no longer matches).
+   * null = chain unreachable / no contract configured.
+   */
+  const proposalScan = useRef<{ key: string; next: number; lastHash: string; events: ProposalEvent[] } | null>(null);
+  const fetchProposals = useCallback(async (): Promise<ProposalEvent[] | null> => {
+    if (!contractAddress || !ethers.isAddress(contractAddress)) return null;
+    try {
+      const provider = new ethers.JsonRpcProvider(rpcUrl);
+      const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, provider);
+      const key = `${contractAddress.toLowerCase()}|${rpcUrl}`;
+      const latest = await provider.getBlockNumber();
+      let scan = proposalScan.current;
+      if (scan && scan.key === key && scan.next > 0) {
+        const seen = await provider.getBlock(scan.next - 1);
+        if (!seen || seen.hash !== scan.lastHash) scan = null; // chain was reset: rescan
+      }
+      if (!scan || scan.key !== key) scan = { key, next: 0, lastHash: "", events: [] };
+      if (latest >= scan.next) {
+        const logs = await contract.queryFilter(contract.filters.ReleaseProposed(), scan.next, latest);
+        const fresh: ProposalEvent[] = [];
+        for (const log of logs) {
+          const args = (log as ethers.EventLog).args;
+          if (!args) continue;
+          fresh.push({
+            version: parseVersionBytes32(String(args.version)),
+            proposer: String(args.proposer).toLowerCase(),
+            ipfsUrl: String(args.ipfsUrl),
+            goldenHash: String(args.goldenHash),
+            blockNumber: log.blockNumber,
+            logIndex: log.index,
+          });
+        }
+        const tip = await provider.getBlock(latest);
+        scan = { key, next: latest + 1, lastHash: tip?.hash ?? "", events: [...scan.events, ...fresh] };
+      }
+      proposalScan.current = scan;
+      return scan.events;
+    } catch (err) {
+      console.warn("Could not scan ReleaseProposed events:", err);
+      return null;
+    }
+  }, [contractAddress, rpcUrl]);
+
+  /** hasSigned(version, who) for the CURRENT proposal round; null = unreadable. */
+  const fetchHasSigned = useCallback(
+    async (version: string, who: string): Promise<boolean | null> => {
+      if (!contractAddress || !ethers.isAddress(contractAddress) || !ethers.isAddress(who)) return null;
+      try {
+        const provider = new ethers.JsonRpcProvider(rpcUrl);
+        const contract = new ethers.Contract(contractAddress, DELTA_OTA_ABI, provider);
+        return (await contract.hasSigned(formatVersionBytes32(version), who)) as boolean;
+      } catch (err) {
+        console.warn("Could not read hasSigned:", err);
+        return null;
+      }
+    },
+    [contractAddress, rpcUrl]
+  );
+
+  /** Apply an imported per-run config through the validated setters above.
+   *  gatewayHost belongs to the tracker and is applied by the caller. */
+  const applyConsoleConfig = useCallback(
+    (config: ConsoleConfig): string[] => {
+      const applied: string[] = [];
+      if (config.contract) { updateContractAddress(config.contract); applied.push("contract"); }
+      if (config.rpc) { updateRpcUrl(config.rpc); applied.push("rpc"); }
+      if (config.phoneRpc) { updatePhoneRpcUrl(config.phoneRpc); applied.push("phoneRpc"); }
+      return applied;
+    },
+    [updateContractAddress, updateRpcUrl, updatePhoneRpcUrl]
+  );
+
+  /** A remote RPC (Funnel/LAN) cannot sign: rpc_guard refuses eth_sendTransaction
+   *  and eth_accounts, so the node-side "dev account" signer only exists when
+   *  this console talks to its own local node. */
+  const canUseDevSigner = isLoopbackRpc(rpcUrl);
+
   return {
     address,
     chainId,
@@ -978,5 +1063,9 @@ export function useDesktopWallet() {
     revokeRelease,
     fetchRelease,
     fetchProposer,
+    fetchProposals,
+    fetchHasSigned,
+    applyConsoleConfig,
+    canUseDevSigner,
   };
 }

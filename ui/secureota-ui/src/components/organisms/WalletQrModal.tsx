@@ -41,6 +41,9 @@ export interface WalletQrModalProps {
   phoneRpcUrl: string;
   onUpdatePhoneRpcUrl: (url: string) => void;
   statusMessage?: string | null;
+  /** False when this console reads a REMOTE node (Funnel/LAN): the node-side
+   *  dev accounts cannot sign there, so authors use their own wallet. */
+  devSignerAvailable?: boolean;
 }
 
 export const WalletQrModal: React.FC<WalletQrModalProps> = ({
@@ -61,7 +64,9 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   phoneRpcUrl,
   onUpdatePhoneRpcUrl,
   statusMessage,
+  devSignerAvailable = true,
 }) => {
+  const devSigners = isDevBuild && devSignerAvailable;
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [copied, setCopied] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"qr" | "hardhat" | "config">("qr");
@@ -76,7 +81,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   const [verifyError, setVerifyError] = useState<string | null>(null);
 
   // P0-4: production has no dev tab — force back to QR if it was selected.
-  const effectiveTab = !isDevBuild && activeTab === "hardhat" ? "qr" : activeTab;
+  const effectiveTab = !devSigners && activeTab === "hardhat" ? "qr" : activeTab;
   // Live chain pill: desired 31337 is the fallback; a known-wrong chain warns.
   const chainOk = connectedChainId === null || connectedChainId === 31337;
   const draftValid = isValidEthereumAddress(draftAddress.trim());
@@ -249,7 +254,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             <Smartphone className="w-3.5 h-3.5" />
             Mobile MetaMask QR
           </button>
-          {isDevBuild && (
+          {devSigners && (
           <button
             type="button"
             onClick={() => setActiveTab("hardhat")}
@@ -396,7 +401,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                   <p className="text-[11px] text-slate-400 font-sans">
                     {statusMessage ||
                       "Start a real pairing session first — a QR appears here only for a live session."}{" "}
-                    {isDevBuild && "Dev signers (next tab) need no session at all."}
+                    {devSigners && "Dev signers (next tab) need no session at all."}
                   </p>
                   <button
                     type="button"
@@ -411,7 +416,7 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
             </div>
           )}
 
-          {effectiveTab === "hardhat" && isDevBuild && (
+          {effectiveTab === "hardhat" && devSigners && (
             <div className="space-y-4 text-xs">
               <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 text-slate-300 font-sans space-y-1">
                 <p className="font-semibold text-white">2-of-3 Multi-Sig Authorized Developer Signers</p>

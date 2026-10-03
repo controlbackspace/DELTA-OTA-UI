@@ -6,6 +6,16 @@ import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
 import { isAcceptedFirmwareFile } from "../../lib/firmwareFiles";
 import { formatFileSize } from "../../lib/utils";
 import { useDesktopWallet } from "../wallet/useDesktopWallet";
+import {
+  approvalsLabel,
+  approveBlockText,
+  governanceRevertText,
+  newestProposals,
+  releaseActions,
+  revokeBlockText,
+} from "../governance/releasePolicy";
+import { parseConsoleConfig } from "../governance/consoleConfig";
+import { verifyPatchHash, type PatchCheck } from "../governance/patchVerify";
 import { loadGatewayHost, saveGatewayHost, statusUrlFor, useGatewayStatus } from "../deployment/useGatewayStatus";
 import type { OnChainReleaseRecord } from "../wallet/useDesktopWallet";
 import {
@@ -42,6 +52,8 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
 // that actually fixes each failure. Falls back to the raw message.
 const explainTxError = (err: unknown): string => {
   const msg = err instanceof Error ? err.message : "Contract call failed";
+  const governance = governanceRevertText(msg);
+  if (governance) return governance;
   const low = msg.toLowerCase();
   // Phone-wallet gas estimation via its own RPC (not our node): the user saw
   // this as code 5000 "Custom eth_gasPrice ... too many errors". Must precede
@@ -163,8 +175,14 @@ export function useFirmwarePipeline() {
   releasesRef.current = releases;
   const fetchReleaseRef = useRef(wallet.fetchRelease);
   fetchReleaseRef.current = wallet.fetchRelease;
-  const fetchProposerRef = useRef(wallet.fetchProposer);
-  fetchProposerRef.current = wallet.fetchProposer;
+  const fetchProposalsRef = useRef(wallet.fetchProposals);
+  fetchProposalsRef.current = wallet.fetchProposals;
+  const fetchHasSignedRef = useRef(wallet.fetchHasSigned);
+  fetchHasSignedRef.current = wallet.fetchHasSigned;
+  const walletAddressRef = useRef(wallet.address);
+  walletAddressRef.current = wallet.address;
+  // Has the connected author already signed each pending release (this round)?
+  const [signedByMe, setSignedByMe] = useState<Record<string, boolean>>({});
   const proposersRef = useRef(proposers);
   proposersRef.current = proposers;
 
@@ -186,22 +204,18 @@ export function useFirmwarePipeline() {
         if (rec.isRevoked && !prev.isRevoked) {
           addLog(`[Chain] ${version} REVOKED on-chain — ledger synced (no clicks needed).`, "error");
         } else if (rec.isLive && !prev.isLive) {
-          addLog(`[Chain] ${version} is now LIVE on-chain (${rec.approvalCount}/3) — ledger synced.`, "success");
+          addLog(`[Chain] ${version} is now LIVE on-chain (${approvalsLabel(rec.approvalCount)}) — ledger synced.`, "success");
         } else {
-          addLog(`[Chain] ${version} synced: approvals ${rec.approvalCount}/3 live=${rec.isLive} revoked=${rec.isRevoked}.`, "info");
+          addLog(`[Chain] ${version} synced: ${approvalsLabel(rec.approvalCount)}, live=${rec.isLive}, revoked=${rec.isRevoked}.`, "info");
         }
       }
       if (prev?.isRevoked && !rec.isRevoked) {
-        // Proposed again after a revoke: the old proposer no longer applies.
-        setProposers((p) => {
-          const next = { ...p };
-          delete next[version.toLowerCase()];
-          return next;
-        });
-        addLog(`[Chain] ${version} was proposed again after its revoke — new approval round (${rec.approvalCount}/3).`, "info");
+        // Proposed again after a revoke: a new round (the proposer comes from
+        // the newest ReleaseProposed event on the next sync).
+        addLog(`[Chain] ${version} was proposed again after its revoke — new approval round (${approvalsLabel(rec.approvalCount)}).`, "info");
       }
       if (!prev) {
-        addLog(`[Chain] ${version} found on-chain: approvals ${rec.approvalCount}/3 live=${rec.isLive} revoked=${rec.isRevoked}.`, "success");
+        addLog(`[Chain] ${version} found on-chain: ${approvalsLabel(rec.approvalCount)}, live=${rec.isLive}, revoked=${rec.isRevoked}.`, "success");
       }
       setReleases((prevList) => {
         if (!prevList.some((r) => r.version === version)) {
@@ -213,6 +227,7 @@ export function useFirmwarePipeline() {
               maxApprovals: 3, // 2-of-3 multi-sig threshold
               isLive: rec.isLive,
               isRevoked: rec.isRevoked,
+              ipfsUrl: rec.ipfsUrl,
             },
             ...prevList,
           ];
@@ -225,6 +240,7 @@ export function useFirmwarePipeline() {
                 approvalCount: rec.approvalCount,
                 isLive: rec.isLive,
                 isRevoked: rec.isRevoked,
+                ipfsUrl: rec.ipfsUrl || r.ipfsUrl,
               }
             : r
         );
@@ -234,8 +250,10 @@ export function useFirmwarePipeline() {
     [addLog]
   );
 
-  // Candidate versions to probe: static well-known tags plus the locally
-  // staged target (so a freshly built v1.2 appears once proposed on-chain).
+  // Versions to probe: every version ever proposed on this contract (read from
+  // ReleaseProposed events, so a console that never staged the binary still
+  // sees what the other authors proposed), plus the well-known tags and the
+  // locally staged target as a fallback while the event scan is unavailable.
   // Chain remains the only source of rows — absent records add nothing.
   const targetFileRef = useRef(targetFile);
   targetFileRef.current = targetFile;
@@ -248,6 +266,7 @@ export function useFirmwarePipeline() {
   useEffect(() => {
     setReleases([]);
     setProposers({});
+    setSignedByMe({});
     setChainSynced(false);
     let cancelled = false;
     const syncOnce = async () => {
@@ -256,6 +275,32 @@ export function useFirmwarePipeline() {
         ? deriveVersionTag(targetFileRef.current.name)
         : null;
       if (staged && !candidates.includes(staged)) candidates.push(staged);
+
+      // One incremental event scan per poll: every version + its NEWEST proposer.
+      try {
+        const proposals = await fetchProposalsRef.current();
+        if (cancelled) return;
+        if (proposals) {
+          const newest = newestProposals(proposals);
+          for (const e of newest.values()) {
+            if (!candidates.some((c) => c.toLowerCase() === e.version.toLowerCase())) candidates.push(e.version);
+          }
+          setProposers((prev) => {
+            let changed = false;
+            const next = { ...prev };
+            for (const [key, e] of newest) {
+              if (next[key] !== e.proposer) {
+                next[key] = e.proposer;
+                changed = true;
+              }
+            }
+            return changed ? next : prev;
+          });
+        }
+      } catch {
+        // event scan failed: fall back to the static candidates this round
+      }
+
       let answered = false;
       for (const v of candidates) {
         try {
@@ -263,21 +308,27 @@ export function useFirmwarePipeline() {
           if (cancelled || !rec) continue;
           answered = true;
           mergeChainRecord(v, rec);
-          // Proposer from the ReleaseProposed event (survives restarts) —
-          // looked up once per existing release, never for empty records.
-          const key = v.toLowerCase();
-          if (rec.goldenHash && !proposersRef.current[key]) {
-            const proposer = await fetchProposerRef.current(v);
-            if (!cancelled && proposer) {
-              setProposers((prev) => (prev[key] ? prev : { ...prev, [key]: proposer }));
-            }
-          }
         } catch {
           // Poll failures keep the last cache; staleness is visible via
           // chainSynced staying false / logs, never fake-live data.
         }
       }
       if (answered) setChainSynced(true);
+
+      // Which pending releases has the connected author already signed? Only
+      // pending ones can still take a signature, so only those are read.
+      const me = walletAddressRef.current;
+      if (me && !cancelled) {
+        const mine: Record<string, boolean> = {};
+        for (const rel of releasesRef.current) {
+          if (rel.isLive || rel.isRevoked) continue;
+          const signed = await fetchHasSignedRef.current(rel.version, me);
+          if (signed !== null) mine[rel.version.toLowerCase()] = signed;
+        }
+        if (!cancelled) setSignedByMe(mine);
+      } else if (!me && !cancelled) {
+        setSignedByMe((prev) => (Object.keys(prev).length ? {} : prev));
+      }
     };
     void syncOnce();
     const id = window.setInterval(() => void syncOnce(), 4000);
@@ -285,7 +336,7 @@ export function useFirmwarePipeline() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [mergeChainRecord, wallet.contractAddress]);
+  }, [mergeChainRecord, wallet.contractAddress, wallet.rpcUrl]);
 
   const handleLoadBinaries = async () => {
     // No fake staging: real binaries enter only via the sidebar dropzones.
@@ -543,162 +594,192 @@ export function useFirmwarePipeline() {
     }
   };
 
+  // Approver's own check of what they are about to sign: download the patch
+  // from the on-chain URL and compare its SHA-256 with the on-chain golden
+  // hash. Stored per version with the hash it was run against, so a version
+  // that is re-proposed with a new hash is never shown as already verified.
+  type StoredPatchCheck = PatchCheck & { forHash: string; checking?: boolean };
+  const [patchChecks, setPatchChecks] = useState<Record<string, StoredPatchCheck>>({});
+  const runPatchCheck = async (version: string): Promise<PatchCheck> => {
+    const key = version.toLowerCase();
+    const rec = await wallet.fetchRelease(version); // fresh url + hash, not the 4 s cache
+    if (!rec) {
+      const res: PatchCheck = { status: "unreachable", detail: "Could not read the release from the chain." };
+      setPatchChecks((p) => ({ ...p, [key]: { ...res, forHash: "" } }));
+      return res;
+    }
+    setPatchChecks((p) => ({
+      ...p,
+      [key]: { status: "unreachable", detail: "Checking…", forHash: rec.goldenHash, checking: true },
+    }));
+    addLog(`[Verify] Downloading ${version} patch from ${rec.ipfsUrl || "(no URL on-chain)"} to compare its SHA-256 with the on-chain hash...`, "info");
+    const res = await verifyPatchHash(rec.ipfsUrl, rec.goldenHash);
+    setPatchChecks((p) => ({ ...p, [key]: { ...res, forHash: rec.goldenHash } }));
+    addLog(
+      `[Verify] ${version}: ${res.status.toUpperCase()} — ${res.detail}`,
+      res.status === "verified" ? "success" : res.status === "mismatch" ? "error" : "warning"
+    );
+    return res;
+  };
+
+  // Fresh chain facts for one release - never decide on the 4 s poll cache,
+  // because another author may have approved or revoked a moment ago.
+  const readReleaseFacts = async (version: string) => {
+    const [rec, proposals, signed] = await Promise.all([
+      wallet.fetchRelease(version),
+      wallet.fetchProposals(),
+      wallet.address ? wallet.fetchHasSigned(version, wallet.address) : Promise.resolve(null),
+    ]);
+    if (rec) mergeChainRecord(version, rec);
+    const proposer =
+      (proposals ? newestProposals(proposals).get(version.toLowerCase())?.proposer : undefined) ??
+      proposers[version.toLowerCase()] ??
+      null;
+    return { rec, proposer, signed };
+  };
+
+  const refreshRelease = async (version: string) => {
+    try {
+      const rec = await wallet.fetchRelease(version);
+      if (rec) mergeChainRecord(version, rec);
+      return rec;
+    } catch {
+      return null; // poll loop converges next interval
+    }
+  };
+
   /**
-   * Action: "Kill" ledger button
-   * Formats and executes payload: revokeRelease(bytes32 version)
+   * Action: "Kill" ledger button - any authorized developer, any state but
+   * already-revoked. Formats and executes: revokeRelease(bytes32 version)
    */
   const handleExecuteKillSwitch = async (version: string) => {
     if (!wallet.isVerified) {
       addLog("[Identity] Verify wallet ownership first (Extension tab → Verify ownership). Revoke refused.", "error");
       return;
     }
-    if (!wallet.isConnected) {
-      addLog("[Kill Switch Error] Wallet not connected — connect an authorized developer wallet to revoke. Nothing was sent.", "error");
+    const { rec: fresh, proposer } = await readReleaseFacts(version);
+    if (!fresh) {
+      addLog(`[Kill Switch Error] Could not read ${version} from the chain — nothing was sent.`, "error");
       return;
     }
-    if (wallet.chainAuthorized === false) {
-      addLog("[Governance] Connected wallet is NOT an authorized dev on this contract — revoke would revert. Switch wallet.", "error");
+    const verdict = releaseActions(
+      { approvalCount: fresh.approvalCount, isLive: fresh.isLive, isRevoked: fresh.isRevoked, proposer },
+      { address: wallet.address, authorized: wallet.chainAuthorized, hasSigned: null }
+    );
+    if (!verdict.canRevoke && verdict.revokeBlock) {
+      addLog(`[Governance] ${revokeBlockText(verdict.revokeBlock)}`, verdict.revokeBlock === "revoked" ? "info" : "error");
       return;
     }
     addLog(`[GOVERNANCE] KILL SWITCH TRIGGERED for ${version}...`, "warning");
     addLog(`[Payload Formatter] Formatting revokeRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
 
     try {
-      {
-        await withTimeout(
-          new ethers.JsonRpcProvider(wallet.rpcUrl).getNetwork(),
-          5000,
-          "contacting the node"
-        );
-        if (wallet.signerOrigin === "dev-node") {
-          addLog("[Signer] DEV SIGNER active — no phone prompt will appear; signing via local node...", "warning");
-        } else {
-          addLog("[Signer] Revoke request sent — approve in your wallet now (60s timeout)...", "info");
-        }
-        addLog(`[Smart Contract] Calling revokeRelease("${version}") on ${wallet.contractAddress}...`, "info");
-        const receipt = await withTimeout(
-          wallet.revokeRelease(version),
-          60000,
-          "waiting for wallet signature"
-        );
-        addLog(`[Blockchain] Release revoked in block #${receipt.blockNumber} (tx: ${receipt.hash.slice(0, 16)}...)`, "error");
-        addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", "warning");
-        addLog(`[Kill Switch] ${version} revoked on-chain — the gateway destroys its artifacts on its next poll (≤5s) and devices get 4.01.`, "error");
-      }
-
-      setReleases((prev) =>
-        prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
+      await withTimeout(
+        new ethers.JsonRpcProvider(wallet.rpcUrl).getNetwork(),
+        5000,
+        "contacting the node"
       );
-      // P0-2: confirm against chain truth immediately.
-      try {
-        const rec = await wallet.fetchRelease(version);
-        if (rec) mergeChainRecord(version, rec);
-      } catch {
-        // Poll loop converges next interval.
-      }
-    } catch (err: unknown) {
-      const msg = explainTxError(err);
-      addLog(`[Kill Switch Error] ${msg}`, "error");
-      if (ALLOW_OFFLINE_PROGRESSION) {
-        setReleases((prev) =>
-          prev.map((r) => (r.version === version ? { ...r, isLive: false, isRevoked: true } : r))
-        );
+      if (wallet.signerOrigin === "dev-node") {
+        addLog("[Signer] DEV SIGNER active — no phone prompt will appear; signing via local node...", "warning");
       } else {
-        addLog("[Governance] Revoke BLOCKED — on-chain revert; ledger unchanged (chain is truth).", "error");
+        addLog("[Signer] Revoke request sent — approve in your wallet now (60s timeout)...", "info");
       }
+      addLog(`[Smart Contract] Calling revokeRelease("${version}") on ${wallet.contractAddress}...`, "info");
+      const receipt = await withTimeout(wallet.revokeRelease(version), 60000, "waiting for wallet signature");
+      addLog(`[Blockchain] Release revoked in block #${receipt.blockNumber} (tx: ${receipt.hash.slice(0, 16)}...)`, "error");
+      addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", "warning");
+      addLog(`[Kill Switch] ${version} revoked on-chain — the gateway destroys its artifacts on its next poll (≤5s) and devices get 4.01.`, "error");
+      await refreshRelease(version); // chain truth only, no optimistic flip
+    } catch (err: unknown) {
+      addLog(`[Kill Switch Error] ${explainTxError(err)}`, "error");
+      addLog("[Governance] Revoke BLOCKED — ledger unchanged (chain is truth).", "error");
+      await refreshRelease(version);
     }
   };
 
   /**
-   * Action: "Approve" ledger button
-   * Formats and executes payload: approveRelease(bytes32 version)
+   * Action: "Approve" ledger button - the second signature (2-of-3). Any
+   * authorized developer who is not the proposer and has not signed; decided
+   * from fresh chain facts, gated by the patch-hash check.
+   * Formats and executes: approveRelease(bytes32 version)
    */
   const handleApproveUpdate = async (version: string) => {
     if (!wallet.isVerified) {
       addLog("[Identity] Verify wallet ownership first (Extension tab → Verify ownership). Approval refused.", "error");
       return;
     }
-    addLog(`[Governance] Signing 2-of-3 threshold approval for ${version}...`, "info");
-    addLog(`[Payload Formatter] Formatting approveRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
-
-    // P0-5: proposer≠approver pre-flight — distinct dev keys required.
-    // hasSigned(version, proposer) is already true; a self-approve would waste
-    // gas and fake quorum, so refuse before any wallet prompt.
-    const proposer = proposers[version.toLowerCase()];
-    const me = (wallet.address || "").toLowerCase();
-    if (proposer && me && proposer === me) {
-      addLog(`[Governance Rejection] 2-of-3 multi-sig requires distinct dev keys. Proposer (${truncateAddress(wallet.address || "")}) cannot approve their own release — hasSigned(version, proposer) is already true. Switch to a different authorized dev and retry.`, "error");
+    const { rec: fresh, proposer, signed } = await readReleaseFacts(version);
+    if (!fresh) {
+      addLog(`[Approve Error] Could not read ${version} from the chain — nothing was sent.`, "error");
+      return;
+    }
+    const verdict = releaseActions(
+      { approvalCount: fresh.approvalCount, isLive: fresh.isLive, isRevoked: fresh.isRevoked, proposer },
+      { address: wallet.address, authorized: wallet.chainAuthorized, hasSigned: signed }
+    );
+    if (!verdict.canApprove && verdict.approveBlock) {
+      addLog(`[Governance] ${approveBlockText(verdict.approveBlock)}`, verdict.approveBlock === "already-live" ? "info" : "error");
       return;
     }
 
-    try {
-      if (wallet.isConnected) {
-        await withTimeout(
-          new ethers.JsonRpcProvider(wallet.rpcUrl).getNetwork(),
-          5000,
-          "contacting the node"
-        );
-        if (wallet.signerOrigin === "dev-node") {
-          addLog("[Signer] DEV SIGNER active — no phone prompt will appear; signing via local node...", "warning");
-        } else {
-          addLog("[Signer] Approval request sent — approve in your wallet now (60s timeout)...", "info");
-        }
-        addLog(`[Smart Contract] Calling approveRelease("${version}") from ${truncateAddress(wallet.address || "")}...`, "info");
-        const receipt = await withTimeout(
-          wallet.approveRelease(version),
-          60000,
-          "waiting for wallet signature"
-        );
-        addLog(`[Blockchain] Threshold approval confirmed in block #${receipt.blockNumber}!`, "success");
-        addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", receipt.origin === "dev-node" ? "warning" : "success");
-      } else {
-        await delay(900);
-      }
-
-      setReleases((prev) =>
-        prev.map((r) =>
-          r.version === version
-            ? { ...r, approvalCount: 2, isLive: true }
-            : r
-        )
+    // Patch gate: a mismatch means the URL does not serve what the proposer
+    // anchored - never sign it. If the host is simply unreachable the author
+    // may still approve, but only after an explicit confirmation.
+    const check = await runPatchCheck(version);
+    if (check.status === "mismatch") {
+      addLog(`[Governance] Approval BLOCKED — ${check.detail}`, "error");
+      return;
+    }
+    if (check.status === "unreachable") {
+      const go = window.confirm(
+        `Could not verify the ${version} patch:\n\n${check.detail}\n\nApprove WITHOUT verifying it?`
       );
-      // P0-2: replace optimistic row with chain truth; only claim LIVE if chain agrees.
-      try {
-        const rec = await wallet.fetchRelease(version);
-        if (rec) {
-          mergeChainRecord(version, rec);
-          if (rec.isLive) {
-            addLog(`[Smart Contract] THRESHOLD REACHED (2/3): ${version} is now LIVE on-chain!`, "success");
-          } else if (!rec.isRevoked) {
-            addLog(`[Governance] Approval recorded on-chain (${rec.approvalCount}/3) — awaiting threshold for LIVE.`, "warning");
-          }
-        } else {
-          addLog(`[Smart Contract] THRESHOLD REACHED (2/3): ${version} is now LIVE on-chain!`, "success");
-        }
-      } catch {
-        // Poll loop converges next interval.
+      if (!go) {
+        addLog(`[Governance] Approval of ${version} cancelled — the patch could not be verified.`, "warning");
+        return;
+      }
+      addLog(`[Governance] Approving ${version} WITHOUT patch verification (author override).`, "warning");
+    }
+
+    addLog(`[Governance] Signing the second signature for ${version} (${approvalsLabel(fresh.approvalCount)} now)...`, "info");
+    addLog(`[Payload Formatter] Formatting approveRelease(bytes32: "${formatVersionBytes32(version)}")`, "info");
+
+    try {
+      await withTimeout(
+        new ethers.JsonRpcProvider(wallet.rpcUrl).getNetwork(),
+        5000,
+        "contacting the node"
+      );
+      if (wallet.signerOrigin === "dev-node") {
+        addLog("[Signer] DEV SIGNER active — no phone prompt will appear; signing via local node...", "warning");
+      } else {
+        addLog("[Signer] Approval request sent — approve in your wallet now (60s timeout)...", "info");
+      }
+      addLog(`[Smart Contract] Calling approveRelease("${version}") from ${truncateAddress(wallet.address || "")}...`, "info");
+      const receipt = await withTimeout(wallet.approveRelease(version), 60000, "waiting for wallet signature");
+      addLog(`[Blockchain] Approval confirmed in block #${receipt.blockNumber}!`, "success");
+      addLog(receipt.origin === "wallet" ? "[Signer] MetaMask phone prompt approved — real user signature" : receipt.origin === "injected" ? "[Signer] Browser extension signed" : "[Signer] DEV SIGNER (node-signed, no phone prompt)", receipt.origin === "dev-node" ? "warning" : "success");
+
+      // Chain truth only: claim LIVE only if the chain says so.
+      const rec = await refreshRelease(version);
+      if (rec?.isLive) {
+        addLog(`[Smart Contract] THRESHOLD REACHED: ${version} is now LIVE on-chain (${approvalsLabel(rec.approvalCount)}).`, "success");
+      } else if (rec && !rec.isRevoked) {
+        addLog(`[Governance] Approval recorded on-chain (${approvalsLabel(rec.approvalCount)}) — awaiting threshold for LIVE.`, "warning");
       }
     } catch (err: unknown) {
-      const msg = explainTxError(err);
-      addLog(`[Approve Error] ${msg}`, "error");
-      if (ALLOW_OFFLINE_PROGRESSION) {
-        // Update state for manual test workflow
-        setReleases((prev) =>
-          prev.map((r) =>
-            r.version === version
-              ? { ...r, approvalCount: 2, isLive: true }
-              : r
-          )
-        );
-      } else {
-        addLog("[Governance] Approval BLOCKED — on-chain revert; awaiting a valid distinct-signer approval.", "error");
-      }
+      addLog(`[Approve Error] ${explainTxError(err)}`, "error");
+      addLog("[Governance] Approval did not go through — the ledger now shows the chain's real state.", "error");
+      await refreshRelease(version); // e.g. a second author's approval landed first
     }
   };
 
   // Deploy is the proposer's action: only the account that called
   // proposeRelease for this version (per the on-chain event) may trigger it.
-  const deployVersion = targetFile ? deriveVersionTag(targetFile.name) : "v1.1";
+  // The followed version defaults to the staged target (proposer's console) and
+  // can be any ledger version, so the other authors follow it too, read-only.
+  const [trackedVersion, setTrackedVersion] = useState<string | null>(null);
+  const deployVersion = trackedVersion ?? (targetFile ? deriveVersionTag(targetFile.name) : "v1.1");
   const deployProposer = proposers[deployVersion.toLowerCase()] ?? null;
   const isDeployProposer =
     deployProposer !== null &&
@@ -714,10 +795,13 @@ export function useFirmwarePipeline() {
     setGatewayHostState(host);
     saveGatewayHost(host);
   };
-  const statusUrl = statusUrlFor(patchUrl, gatewayHost);
+  const trackRecord = releases.find((r) => r.version === deployVersion) ?? null;
+  // Where the gateway publishes its status: an explicit Gateway address wins;
+  // otherwise the host of the patch URL (this PC's own build, or the URL the
+  // proposer anchored on-chain for the followed release).
+  const statusUrl = statusUrlFor(patchUrl ?? trackRecord?.ipfsUrl ?? null, gatewayHost);
   const gateway = useGatewayStatus(statusUrl);
   const gs = gateway.status;
-  const trackRecord = releases.find((r) => r.version === deployVersion) ?? null;
   const gatewayStaged =
     gateway.online && gs?.gateway_state === "staged" && gs.staged_version === deployVersion;
   // A version report only counts if it came after this release was staged,
@@ -772,6 +856,9 @@ export function useFirmwarePipeline() {
   const loggedStageRef = useRef("");
   const loggedPctRef = useRef(-1);
   useEffect(() => {
+    loggedStageRef.current = ""; // a different version starts its own stage narration
+  }, [deployVersion]);
+  useEffect(() => {
     if (!isTracking) {
       loggedStageRef.current = "";
       loggedPctRef.current = -1;
@@ -802,25 +889,55 @@ export function useFirmwarePipeline() {
     }
   }, [isTracking, updateState, gateway.online, trackRecord, gs, deployVersion, statusUrl, addLog]);
 
+  /** One-click follow from a ledger row: pick the version and start the
+   *  read-only tracker. Open to every author - no wallet or role needed. */
+  const followRelease = (version: string) => {
+    if (!releases.some((r) => r.version === version)) {
+      addLog(`[Tracker] ${version} is not on this contract (yet).`, "error");
+      return;
+    }
+    setTrackedVersion(version);
+    if (isTracking) {
+      addLog(`[Tracker] Now following ${version} (read-only).`, "info");
+    } else {
+      addLog(`[Tracker] Following ${version} (read-only): chain → gateway → device.`, "info");
+      setIsTracking(true);
+    }
+  };
+
   const toggleTracking = () => {
     if (isTracking) {
       setIsTracking(false);
       addLog("[Tracker] Stopped.", "info");
       return;
     }
-    if (!approvalRequested) {
-      addLog("[Error] Complete all 5 workflow steps before tracking the deployment.", "error");
+    // Following is read-only and open to every author: it only needs the
+    // release to exist on this contract. No wallet, proposer role or finished
+    // wizard is required.
+    if (!trackRecord) {
+      addLog(`[Tracker] ${deployVersion} is not on this contract yet — pick a version from the ledger (or propose it first).`, "error");
       return;
     }
-    if (!isDeployProposer) {
-      addLog(
-        `[Governance] Tracking is restricted to the proposer of ${deployVersion} (${deployProposer ? truncateAddress(deployProposer) : "unknown — not proposed on this contract"}) — connected ${wallet.address ? truncateAddress(wallet.address) : "no wallet"}.`,
-        "error"
-      );
-      return;
-    }
-    addLog(`[Tracker] Tracking ${deployVersion}: chain → gateway (${statusUrl}) → device.`, "info");
+    addLog(`[Tracker] Tracking ${deployVersion} (read-only): chain → gateway (${statusUrl}) → device.`, "info");
     setIsTracking(true);
+  };
+
+  /** Apply the DELTAOTA-CONFIG line printed by demo-up (contract, RPC, phone
+   *  RPC, gateway address). Returns true when something was applied. */
+  const importConsoleConfig = (text: string): boolean => {
+    const parsed = parseConsoleConfig(text);
+    if (!parsed.ok) {
+      addLog(`[Config] ${parsed.error}`, "error");
+      return false;
+    }
+    const applied = wallet.applyConsoleConfig(parsed.config);
+    if (parsed.config.gatewayHost) {
+      setGatewayHost(parsed.config.gatewayHost);
+      applied.push("gatewayHost");
+    }
+    addLog(`[Config] Imported: ${applied.join(", ")}.`, "success");
+    for (const why of parsed.skipped) addLog(`[Config] Skipped ${why}.`, "warning");
+    return true;
   };
 
   return {
@@ -865,5 +982,12 @@ export function useFirmwarePipeline() {
     setGatewayHost,
     trackRecord,
     deviceBlock,
+    trackedVersion,
+    selectTrackedVersion: setTrackedVersion,
+    followRelease,
+    signedByMe,
+    patchChecks,
+    runPatchCheck,
+    importConsoleConfig,
   };
 }

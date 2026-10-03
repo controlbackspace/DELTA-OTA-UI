@@ -133,6 +133,13 @@ echo  Artifacts: http://%LANIP%:8000/  (serves gateway\artifacts)
 echo  Phone RPC: %TUNNEL%  (%TUNNEL_MODE%; MetaMask custom network, chain 31337)
 echo  App      : opening in the DeltaOTA-App window
 echo ---------------------------------------------------------------
+echo  Authors 2 and 3: paste this line into their console (Console config - Import config)
+set "GWFIELD="
+if defined DELTA_GATEWAY_HOST set "GWFIELD=,"gatewayHost":"%DELTA_GATEWAY_HOST%""
+echo  DELTAOTA-CONFIG {"v":1,"contract":"%CONTRACT%","rpc":"%TUNNEL%","phoneRpc":"%TUNNEL%"%GWFIELD%}
+echo DELTAOTA-CONFIG {"v":1,"contract":"%CONTRACT%","rpc":"%TUNNEL%","phoneRpc":"%TUNNEL%"%GWFIELD%}> "%ENVDIR%\console-config.txt"
+echo  (also saved to %ENVDIR%\console-config.txt; set DELTA_GATEWAY_HOST=^<Pi Tailscale IP^> before demo-up to include the gateway)
+echo ---------------------------------------------------------------
 echo  Next (judgment steps, NOT automated):
 echo   1. App Config tab: contract = %CONTRACT%, Node RPC = local (Phone RPC is pre-filled with the tunnel)
 echo   2. Phone MetaMask: chain 31337 RPC must be %TUNNEL% (Tailscale: set once, it never changes)

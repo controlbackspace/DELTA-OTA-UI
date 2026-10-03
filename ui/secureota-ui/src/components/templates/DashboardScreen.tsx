@@ -13,23 +13,15 @@ import { truncateAddress } from "../../lib/web3Payloads";
 export const DashboardScreen: React.FC = () => {
   const pipeline = useFirmwarePipeline();
 
-  const allStepsComplete =
-    pipeline.baseUploaded &&
-    pipeline.targetUploaded &&
-    pipeline.deltaGenerated &&
-    pipeline.urlConfigured &&
-    pipeline.walletConnected &&
-    pipeline.approvalRequested;
-
-  // Tracking is the proposer's action (on-chain ReleaseProposed event);
-  // stopping an active tracker is always allowed.
-  const canTrack = pipeline.isTracking || (allStepsComplete && pipeline.isDeployProposer);
+  // Following a release is read-only and open to every author: it only needs
+  // the release to exist on this contract. (The five wizard steps are the
+  // proposer's path and gate nothing here.)
+  const canTrack = pipeline.isTracking || !!pipeline.trackRecord;
   const trackBlockedReason =
-    !pipeline.isTracking && allStepsComplete && !pipeline.isDeployProposer
-      ? pipeline.deployProposer
-        ? `Only the proposer of ${pipeline.deployVersion} (${truncateAddress(pipeline.deployProposer)}) can track this release`
-        : `${pipeline.deployVersion} has no on-chain proposer yet — propose it first`
+    !pipeline.isTracking && !pipeline.trackRecord
+      ? `${pipeline.deployVersion} is not on this contract yet — use Follow on a ledger row, or propose it first`
       : undefined;
+  const [configText, setConfigText] = React.useState("");
 
   return (
     <div className="h-screen bg-[#05080f] text-slate-300 flex flex-col overflow-hidden font-mono">
@@ -88,7 +80,7 @@ export const DashboardScreen: React.FC = () => {
             }`}
           >
             <Zap className="w-4 h-4" />
-            {pipeline.isTracking ? "Stop Tracking" : "Track Deployment"}
+            {pipeline.isTracking ? "Stop Tracking" : `Track ${pipeline.deployVersion}`}
           </button>
         </div>
       </header>
@@ -194,6 +186,32 @@ export const DashboardScreen: React.FC = () => {
             </div>
           </div>
 
+          {/* Per-run console settings: any author's console is configured from the
+              single DELTAOTA-CONFIG line that demo-up prints. */}
+          <div className="shrink-0 flex items-center gap-2 px-6 py-2 border-b border-[#1a2a3a] bg-[#060c18] text-[11px] font-sans">
+            <span className="text-slate-500 whitespace-nowrap">Console config</span>
+            <input
+              value={configText}
+              onChange={(e) => setConfigText(e.target.value)}
+              placeholder="paste the DELTAOTA-CONFIG line printed by demo-up (contract, RPC, phone RPC, gateway)"
+              spellCheck={false}
+              className="flex-1 min-w-0 px-2 py-1 rounded border border-[#1a2a3a] bg-[#070d18] text-slate-200 font-mono placeholder:text-slate-600"
+            />
+            <button
+              type="button"
+              disabled={!configText.trim()}
+              onClick={() => {
+                if (pipeline.importConsoleConfig(configText)) setConfigText("");
+              }}
+              className="px-3 py-1 rounded border border-cyan-800/60 bg-cyan-950/30 text-cyan-300 hover:bg-cyan-950/60 disabled:opacity-40 disabled:cursor-not-allowed"
+            >
+              Import config
+            </button>
+            <span className="text-slate-600 font-mono hidden xl:inline" title={pipeline.wallet.contractAddress}>
+              {pipeline.wallet.contractAddress ? truncateAddress(pipeline.wallet.contractAddress) : "no contract"}
+            </span>
+          </div>
+
           {/* Live chain -> gateway -> device tracker (real data only) */}
           {pipeline.isTracking && (
             <DeploymentTracker
@@ -213,9 +231,14 @@ export const DashboardScreen: React.FC = () => {
             releases={pipeline.releases}
             onExecuteKillSwitch={pipeline.handleExecuteKillSwitch}
             onApproveUpdate={pipeline.handleApproveUpdate}
+            onVerifyPatch={(v) => void pipeline.runPatchCheck(v)}
+            onTrack={pipeline.followRelease}
+            trackedVersion={pipeline.isTracking ? pipeline.deployVersion : null}
             proposerByVersion={pipeline.proposers}
             connectedAddress={pipeline.wallet.address}
-            canRevoke={pipeline.wallet.isConnected && pipeline.wallet.chainAuthorized !== false}
+            authorized={pipeline.wallet.chainAuthorized}
+            signedByMe={pipeline.signedByMe}
+            patchChecks={pipeline.patchChecks}
           />
 
           {/* Terminal Execution Window */}
@@ -246,6 +269,7 @@ export const DashboardScreen: React.FC = () => {
         onUpdatePhoneRpcUrl={pipeline.wallet.updatePhoneRpcUrl}
         onOpenWalletConnect={() => void pipeline.wallet.openWalletModal()}
         statusMessage={pipeline.wallet.statusMessage}
+        devSignerAvailable={pipeline.wallet.canUseDevSigner}
       />
     </div>
   );
