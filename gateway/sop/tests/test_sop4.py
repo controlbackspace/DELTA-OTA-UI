@@ -158,25 +158,34 @@ class StepTests(unittest.TestCase):
         self.assertEqual(r.data["incremental"]["updater"], {"flash": 43084, "ram": 58072})
         text = " ".join(r.claims)
         self.assertIn("156,872 B of flash", text)
-        self.assertIn("3.6x", text)
-        self.assertIn("FINDING", text)                              # g_decoder dominates the updater's RAM
-        self.assertIn("g_decoder", text)
-        self.assertTrue(any("SKIPPED - hardware part: no --serial" in n for n in r.notes))
-        self.assertTrue(any("lower bound" in n for n in r.notes))
+        self.assertIn("3.6 times", text)
+        self.assertIn("dominated by `g_decoder`", text)             # the decoder dominates the updater's RAM
+        self.assertIn("excludes this decoder", text)
+        self.assertTrue(any("not measured in this run" in n for n in r.not_performed))
+        self.assertTrue(any("lower bound" in n for n in r.limitations))
+        self.assertTrue(r.method and "156,872 B of flash" in r.summary)
+        # nothing operator-facing in the document text
+        blob = " ".join(r.claims + r.notes + r.limitations + r.not_performed + [r.summary, r.method])
+        for phrase in ("SKIPPED", "REPLACE", "FINDING", "must not be quoted"):
+            self.assertNotIn(phrase, blob)
 
     def test_serial_without_allow_flash_never_flashes(self):
         with mock.patch.object(sop4, "hw_session") as hw:
             r = sop4.run(self.ctx, serial="COM7")
         hw.assert_not_called()
-        self.assertTrue(any("--allow-flash was not given" in n for n in r.notes))
+        self.assertTrue(any("flashing was not authorised" in n for n in r.not_performed))
 
     def test_dry_run_prints_the_plan_and_flashes_nothing(self):
-        with mock.patch.object(sop4, "hw_session") as hw:
+        import contextlib, io
+        out = io.StringIO()
+        with mock.patch.object(sop4, "hw_session") as hw, contextlib.redirect_stdout(out):
             r = sop4.run(self.ctx, serial="COM7", allow_flash=True, hw_dry_run=True)
         hw.assert_not_called()
-        note = next(n for n in r.notes if "dry run" in n)
-        self.assertIn("web3_baseline", note)
-        self.assertIn("flash_device.bat factory COM7", note)
+        self.assertTrue(any("dry run" in n for n in r.not_performed))
+        plan = out.getvalue()                                       # the operator plan goes to the console only
+        self.assertIn("web3_baseline", plan)
+        self.assertIn("flash_device.bat factory COM7", plan)
+        self.assertNotIn("flash_device", " ".join(r.not_performed))
 
     def test_hardware_capture_adds_heap_timing_and_a_measured_claim(self):
         parsed = sop4.parse_log(LOG)
@@ -192,7 +201,7 @@ class StepTests(unittest.TestCase):
         with mock.patch.object(sop4, "hw_session", side_effect=RuntimeError("upload failed")):
             r = sop4.run(self.ctx, serial="COM7", allow_flash=True)
         self.assertEqual(r.status, "ok")
-        self.assertTrue(any("hardware part failed: upload failed" in n for n in r.notes))
+        self.assertTrue(any("did not complete (upload failed)" in n for n in r.not_performed))
 
     def test_failed_build_is_reported_failed(self):
         bad = fp.BuildResult("web3_baseline", False, Path("."), "pio run failed: x")

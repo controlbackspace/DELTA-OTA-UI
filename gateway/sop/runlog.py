@@ -36,9 +36,13 @@ class StepResult:
     status: str = "ok"
     mode: str = "offline"           # offline | hw
     reason: str = ""                # why skipped / failed / not implemented
+    method: str = ""                # formal description of how the result was obtained
+    summary: str = ""               # one-sentence principal result (for the summary table)
     tables: list[Table] = field(default_factory=list)
-    claims: list[str] = field(default_factory=list)
-    notes: list[str] = field(default_factory=list)
+    claims: list[str] = field(default_factory=list)          # findings; "[measured, detail] text"
+    notes: list[str] = field(default_factory=list)           # observations
+    limitations: list[str] = field(default_factory=list)     # scope limits / threats to validity
+    not_performed: list[str] = field(default_factory=list)   # parts that did not run in this run, with the reason
     files: list[str] = field(default_factory=list)   # paths relative to the run dir
     data: dict = field(default_factory=dict)
 

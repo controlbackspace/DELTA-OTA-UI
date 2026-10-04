@@ -89,6 +89,19 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
         web3_version: str = "v1.1", factory_log: str | None = None, hw_dry_run: bool = False,
         capture_seconds: int = 90, hw_runner=subprocess.run, capture_cls=SerialCapture) -> StepResult:
     res = StepResult(sop="SOP4", title="Web3 offloading: device footprint", mode="offline")
+    res.method = (
+        "Three firmware builds sharing the same ESP32 and Wi-Fi base were compared: a control (Wi-Fi only), the Delta-OTA "
+        "updater, and a read-only on-device Web3 client (HTTPS, Keccak-256, a ledger query and ABI decoding) representing "
+        "a lower bound of the function that offloading removes from the device. Flash and static RAM were taken from the "
+        "build tool, the additional flash of the Web3 client was attributed to link-map groups, and the largest static-RAM "
+        "symbols of the updater were extracted. The increments over the control were set against the Class 2 budget "
+        "(250 KiB flash, 50 KiB RAM). Heap use and execution time of the on-device client were measured on the device "
+        "only where a hardware run was performed."
+    )
+    res.limitations.append(
+        "The on-device Web3 client is a lower bound: it is read-only and omits transaction signing, a JSON library and "
+        "certificate validation, so a complete client would cost more."
+    )
     project, pio = fp.find_project(firmware_dir), fp.find_pio()
     if project is None or pio is None:
         res.status = "skipped"
@@ -150,23 +163,24 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
     try:
         eng = fp.engine_symbols(f.build_dir)
     except Exception as e:                                # nm missing / unreadable map: report, don't guess
-        res.notes.append(f"Engine symbol attribution unavailable: {e}")
+        res.not_performed.append(f"Symbol-level attribution of the engine was not available ({e}).")
     if eng:
         res.data["engine"] = eng                             # SOP2 reads this
         res.tables.append(Table(
             "Delta-OTA engine alone (symbol-attributed, factory build)", ["Item", "Size"],
             [["Engine code (flash)", f"{eng['flash']:,} B across {eng['symbols']} symbols"],
              ["Engine static RAM", f"{eng['ram']:,} B"]], "measured",
-            note="DeltaOTAEngine::* and the otaEngine instance only (class2/measure_engine.py); shared libraries "
-                 "such as mbedTLS CCM are not in this row, so compare designs with the increment table above."))
+            note="The row covers only the DeltaOTAEngine symbols; shared libraries such as the mbedTLS CCM code are not "
+                 "included, so the designs are compared with the increment table above."))
     try:
         ref = json.loads(REFERENCE_STACK.read_text(encoding="utf-8"))
-        res.tables.append(Table(
-            "Class 2 reference stack (cited)", ["Component", "Flash (B)", "RAM (B)", "Source"],
-            [[r["component"], f"{r['flash_bytes']:,}", f"{r['ram_bytes']:,}", r["source"]] for r in ref["rows"]], "cited"))
-        if any("REPLACE" in r["source"] for r in ref["rows"]):
-            res.notes.append("The cited reference-stack row is still a placeholder (class2/reference-stack.json): "
-                             "replace it with the exact Zephyr/Contiki figures before quoting it.")
+        rows = [r for r in ref["rows"] if "REPLACE" not in r["source"]]      # a placeholder is not a citation
+        if rows:
+            res.tables.append(Table(
+                "Class 2 reference stack", ["Component", "Flash (B)", "RAM (B)", "Source"],
+                [[r["component"], f"{r['flash_bytes']:,}", f"{r['ram_bytes']:,}", r["source"]] for r in rows], "cited"))
+        else:
+            res.limitations.append("A comparison with a published Class 2 reference stack is not included in this edition.")
     except (OSError, ValueError, KeyError):
         pass
 
@@ -176,7 +190,11 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
         f"eth_call, ABI decode; read-only) adds {wf:,} B of flash ({_pct(wf, fp.CLASS2_FLASH_BYTES)} of a 250 KiB "
         f"Class 2 flash budget by itself) and {inc['web3']['ram']:,} B of static RAM, before any heap for TLS; the "
         f"whole Delta-OTA updater adds {uf:,} B of flash"
-        + (f" - the Web3 client needs {wf / uf:.1f}x that." if uf > 0 else ".")
+        + (f", and the Web3 client requires {wf / uf:.1f} times that amount." if uf > 0 else ".")
+    )
+    res.summary = (
+        f"An on-device Web3 client would add {wf:,} B of flash ({_pct(wf, fp.CLASS2_FLASH_BYTES)} of the Class 2 flash budget) "
+        f"against {uf:,} B for the whole Delta-OTA updater, before any heap for TLS."
     )
 
     # What dominates the updater's static RAM (the engine-only row cannot see it).
@@ -184,7 +202,7 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
         top = fp.top_ram_symbols(f.build_dir)
     except Exception as e:
         top = None
-        res.notes.append(f"Largest-symbol table unavailable: {e}")
+        res.not_performed.append(f"The largest-symbol table was not available ({e}).")
     if top:
         res.tables.append(Table(
             "Largest static-RAM symbols in the Delta-OTA updater (factory build)", ["Symbol", "Size (B)", "% of Class 2 RAM"],
@@ -192,18 +210,17 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
         biggest = top[0]
         if biggest[1] >= 0.5 * fp.CLASS2_RAM_BYTES:
             res.claims.append(
-                f"[measured, FINDING] The updater's static RAM is dominated by `{biggest[0]}` ({biggest[1]:,} B, "
-                f"{_pct(biggest[1], fp.CLASS2_RAM_BYTES)} of the 50 KiB Class 2 RAM budget on its own) - the DOTA decoder "
-                f"and its inflate dictionary. The updater adds {inc['updater']['ram']:,} B of static RAM in total "
-                f"({_pct(inc['updater']['ram'], fp.CLASS2_RAM_BYTES)} of the budget). The earlier engine-only figure "
-                f"({eng['ram']:,} B) counts only DeltaOTAEngine symbols and excludes this decoder, so it must not be "
-                "quoted as the engine's total RAM." if eng else
-                f"[measured, FINDING] The updater's static RAM is dominated by `{biggest[0]}` ({biggest[1]:,} B), "
-                f"{_pct(biggest[1], fp.CLASS2_RAM_BYTES)} of the 50 KiB Class 2 RAM budget on its own."
+                f"[measured] The static RAM of the updater is dominated by `{biggest[0]}` ({biggest[1]:,} B, "
+                f"{_pct(biggest[1], fp.CLASS2_RAM_BYTES)} of the 50 KiB Class 2 RAM budget on its own), which holds the DOTA "
+                f"decoder and its inflate dictionary. The updater adds {inc['updater']['ram']:,} B of static RAM in total "
+                f"({_pct(inc['updater']['ram'], fp.CLASS2_RAM_BYTES)} of the budget). "
+                + (f"The engine-only figure ({eng['ram']:,} B) covers only the DeltaOTAEngine symbols and excludes this decoder."
+                   if eng else "")
             )
             res.notes.append(
-                "Possible reduction (not done here): compress the DOTA stream with a smaller deflate window on the gateway "
-                "and shrink the decoder's circular dictionary to match; the dictionary is the bulk of this symbol.")
+                "The inflate dictionary accounts for most of this symbol. A smaller deflate window on the gateway, with a "
+                "correspondingly smaller circular dictionary on the device, would reduce it; this was not evaluated."
+            )
 
     # ---- hardware: heap and timing ----------------------------------------------
     hw_parsed = None
@@ -216,22 +233,25 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
             hw_parsed = hw.get("parsed")
             res.files.append(hw["log"])
             if hw["restored"]:
-                res.notes.append("Factory updater restored on the device after the measurement.")
+                res.notes.append("The factory updater was restored on the device after the measurement.")
             else:
-                res.notes.append("WARNING: restoring the factory updater did not report success - run "
-                                 f"`tools\\flash_device.bat factory {serial}` before using the board (raw/restore-factory.log).")
+                res.notes.append("Restoration of the factory updater on the device could not be confirmed.")
+                print(f"WARNING: restoring the factory updater did not report success - run "
+                      f"tools\\flash_device.bat factory {serial} before using the board (raw/restore-factory.log).")
         except Exception as e:
-            res.notes.append(f"SKIPPED - hardware part failed: {e}. The factory updater restore was attempted; "
-                             f"if the board does not boot the updater run `tools\\flash_device.bat factory {serial}`.")
+            res.not_performed.append(f"The hardware measurement did not complete ({e}).")
+            print(f"WARNING: the hardware part failed ({e}). The factory updater restore was attempted; if the board "
+                  f"does not boot the updater, run tools\\flash_device.bat factory {serial}.")
     elif serial and hw_dry_run:
-        res.notes.append("Hardware dry run - nothing was flashed. Plan: pio run -e web3_baseline -t upload --upload-port "
-                         f"{serial}; capture {capture_seconds} s; restore with tools\\flash_device.bat factory {serial}.")
+        res.not_performed.append("The hardware measurement was not performed (dry run: nothing was flashed).")
+        print("Hardware dry run - nothing was flashed. Plan: pio run -e web3_baseline -t upload --upload-port "
+              f"{serial}; capture {capture_seconds} s; restore with tools\\flash_device.bat factory {serial}.")
     elif serial:
-        res.notes.append("SKIPPED - hardware part: --allow-flash was not given (flashing replaces the factory updater "
-                         "until it is restored).")
+        res.not_performed.append("The hardware measurement was not performed (flashing was not authorised for this run).")
+        print("The hardware part needs --allow-flash: it replaces the factory updater until it is restored.")
     else:
-        res.notes.append("SKIPPED - hardware part: no --serial port. Heap and timing of the on-device Web3 client are "
-                         "NOT reported; only static sizes above.")
+        res.not_performed.append("Heap use and execution time of the on-device Web3 client were not measured in this run "
+                                 "(no hardware measurement); only static sizes are reported.")
 
     if hw_parsed:
         _hardware_tables(res, hw_parsed)
@@ -252,15 +272,12 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
                 "Peak heap of the Delta-OTA update stream (from the supplied serial capture)", ["Item", "Value"],
                 [["[MEM] stream-start / stream-end min free", f"{p['start_min']:,} / {p['end_min']:,} B"],
                  ["Peak heap during the stream (Class 2 definition)", f"{p['class2_peak']:,} B"]], "measured",
-                note=f"From {factory_log}."))
+                note="Taken from the supplied serial capture of an update."))
             res.claims.append(f"[measured] Peak heap of a Delta-OTA update stream: {p['class2_peak']:,} B "
                               f"({_pct(p['class2_peak'], fp.CLASS2_RAM_BYTES)} of 50 KiB).")
         except (OSError, ValueError) as e:
-            res.notes.append(f"Supplied factory capture not usable: {e}")
+            res.not_performed.append(f"The supplied serial capture of an update could not be used ({e}).")
 
-    res.notes.append(
-        "The baseline is a lower bound (read-only, no transaction signing, no JSON library, no certificate "
-        "validation); a real on-device Web3 client costs more, which strengthens the offloading result.")
     return res
 
 
@@ -268,7 +285,7 @@ def _hardware_tables(res: StepResult, parsed: dict) -> None:
     try:
         p = peak_heap(parsed["mem"], "web3-start", "web3-end")
     except ValueError:
-        res.notes.append("The capture has no web3-start/web3-end [MEM] markers (did Wi-Fi connect?).")
+        res.not_performed.append("The hardware capture contained no Web3 measurement markers; heap use and timing are not reported.")
         return
     ok = [w for w in parsed["web3"] if w["ok"]]
     rows = [["Heap free at web3-start", f"{p['start_free']:,} B"],

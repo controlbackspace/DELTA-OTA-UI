@@ -15,6 +15,11 @@ Results go to `sop-results/<UTC stamp>/` (git-ignored): `SOP-REPORT.md`,
 `results.json`, `meta.json` (commit, versions, SHA-256 of the input images),
 and `sopN/*.csv|json`. `--run DIR` adds a step to an existing run.
 
+`SOP-REPORT.md` is written as a formal evidence report for a review panel: purpose and scope,
+experimental setup, one section per statement of the problem (research question, method, principal
+result, findings, numbered tables, observations, limitations), a summary table, limitations and
+reproducibility. Statement 5 is reserved for the implementation phase.
+
 ## What each number means
 Every table is tagged **measured** (taken here), **modelled** (computed from
 stated assumptions, e.g. link rates) or **cited** (from the literature). A step

@@ -179,6 +179,19 @@ def run(ctx: RunContext, repeats: int = 5, firmware_dir=None, base=None, target=
         rates=None, synthetic: bool = True) -> StepResult:
     rates = rates or DEFAULT_RATES
     res = StepResult(sop="SOP1", title="Delta footprint and network load", mode="offline")
+    res.method = (
+        "Update artifacts were generated with the production release builder (bsdiff4, producing a BSDIFF40 patch) and "
+        "re-packed into the device stream format (DOTA). Payload sizes, block counts and generation times were measured "
+        "for the real firmware pair, a 100 KB test pair and six synthetic stress cases. Bytes on the wire were derived "
+        "from the exact frame layout of the update protocol (CoAP request and reply, AEAD framing and UDP/IP headers "
+        "for every block). Each reconstruction was verified byte for byte. Airtime and fleet-update durations were "
+        "modelled from stated link rates."
+    )
+    res.limitations += [
+        "Airtime and fleet-update durations are modelled lower bounds computed from stated link rates; they exclude "
+        "acknowledgements, retransmissions and medium-access delays.",
+        "Generation and decoding times were measured on the build host, not on the target microcontroller.",
+    ]
 
     cases: list[dict] = []
     real = find_real_pair(firmware_dir, base, target)
@@ -188,9 +201,9 @@ def run(ctx: RunContext, repeats: int = 5, firmware_dir=None, base=None, target=
         ctx.add_input("real firmware target", t)
         cases.append(measure_pair(f"{b.name} -> {t.name}", "real", b.read_bytes(), t.read_bytes(), repeats))
     else:
-        res.notes.append(
-            "The real firmware pair (release-images/app-v1.0.bin, app-v1.1.bin) was not found, so "
-            "NO claim about the real firmware is made. Pass --firmware-dir or --base/--target."
+        res.not_performed.append(
+            "The production firmware image pair (app-v1.0.bin, app-v1.1.bin) was not available; no result for the "
+            "production firmware is reported."
         )
 
     fx = _fixtures_pair()
@@ -223,9 +236,9 @@ def run(ctx: RunContext, repeats: int = 5, firmware_dir=None, base=None, target=
     # --- tables ----------------------------------------------------------------
     res.tables.append(Table(
         "Payload and block counts per firmware pair", SIZE_COLUMNS, [_row(c) for c in cases], "measured",
-        note=f"Sizes, block counts and times are measured with the production code ({repeats} timing repeats; "
-             f"{BLOCK}-byte blocks). 'Wire' = CoAP request+reply with AEAD framing and UDP/IP headers per "
-             "exchange, computed from the protocol's exact frame layout.",
+        note=f"Sizes, block counts and times were measured with the production code ({repeats} timing repeats; "
+             f"{BLOCK}-byte blocks). Wire savings are derived from the frame layout of the update protocol "
+             "(CoAP request and reply, AEAD framing, UDP/IP headers per exchange).",
     ))
 
     primary = cases[0]
@@ -241,7 +254,7 @@ def run(ctx: RunContext, repeats: int = 5, firmware_dir=None, base=None, target=
     res.tables.append(Table(
         f"Modelled airtime for one device - {primary['case']}",
         ["Link", "Delta (DOTA)", "Full image (DOTA)", "Full image (raw)"], air_rows, "modelled",
-        note="Lower bound: wire bits / link rate. Ignores ACKs, retransmission, MAC back-off and processing.",
+        note="Lower bound: wire bits divided by link rate; acknowledgements, retransmission, back-off and processing are excluded.",
     ))
     fleet_rows = []
     for name, bps in rates:
@@ -255,26 +268,30 @@ def run(ctx: RunContext, repeats: int = 5, firmware_dir=None, base=None, target=
     res.tables.append(Table(
         f"Modelled time to update a fleet on one shared channel - {primary['case']}",
         ["Link", "Devices", "Delta (DOTA)", "Full image (DOTA)", "Full image (raw)"], fleet_rows, "modelled",
-        note="Bandwidth-saturation proxy: devices update one after another on a shared medium "
+        note="Proxy for bandwidth saturation: devices update one after another on a shared medium "
              "(devices x single-device airtime).",
     ))
 
     # --- claims ----------------------------------------------------------------
     p = primary
-    label = "real firmware" if p["kind"] == "real" else f"{p['kind']} data (NOT the real firmware)"
+    label = "production firmware" if p["kind"] == "real" else f"{p['kind']} data, not the production firmware"
+    res.summary = (
+        f"For {p['case']}, the update is delivered in {p['blocks_delta']} blocks instead of {p['blocks_full_dota']} "
+        f"for a full image, {p['saved_vs_full_dota']:.1%} less traffic on the wire."
+    )
     res.claims.append(
-        f"[measured, {label}] {p['case']}: the new image is {p['target_bytes']:,} B; the BSDIFF40 patch is "
+        f"[measured, {label}] For the pair {p['case']}, the new image is {p['target_bytes']:,} B. The BSDIFF40 patch is "
         f"{p['bsdiff_bytes']:,} B and the device stream (DOTA) is {p['dota_bytes']:,} B "
-        f"({p['ratio_dota']:.1%} smaller than the image), delivered in {p['blocks_delta']} blocks versus "
-        f"{p['blocks_full_dota']} blocks for the same image as a full deflated image and "
-        f"{p['blocks_full_raw']} blocks raw. On the wire (CoAP+AEAD+UDP/IP) that is {p['l4_delta']:,} B versus "
-        f"{p['l4_full_dota']:,} B ({p['saved_vs_full_dota']:.1%} less) or {p['l4_full_raw']:,} B "
-        f"({p['saved_vs_full_raw']:.1%} less) for a raw image."
+        f"({p['ratio_dota']:.1%} smaller than the image). It is delivered in {p['blocks_delta']} blocks, compared with "
+        f"{p['blocks_full_dota']} blocks for the same image sent as a full deflated image and "
+        f"{p['blocks_full_raw']} blocks sent raw. On the wire (CoAP, AEAD framing and UDP/IP) this is {p['l4_delta']:,} B "
+        f"against {p['l4_full_dota']:,} B ({p['saved_vs_full_dota']:.1%} less) for the full deflated image and "
+        f"{p['l4_full_raw']:,} B ({p['saved_vs_full_raw']:.1%} less) for the raw image."
     )
     bps = rates[0][1]
     n_big = FLEET_SIZES[-1]
     res.claims.append(
-        f"[modelled, lower bound] Updating {n_big} devices one after another on a shared {rates[0][0]} channel takes "
+        f"[modelled, lower bound] Updating {n_big} devices one after another on a shared {rates[0][0]} channel would take "
         f"{fmt_duration(n_big * airtime_s(p['l4_delta'], bps))} with the delta versus "
         f"{fmt_duration(n_big * airtime_s(p['l4_full_dota'], bps))} with a full (DOTA) image and "
         f"{fmt_duration(n_big * airtime_s(p['l4_full_raw'], bps))} with a raw image."
@@ -282,13 +299,13 @@ def run(ctx: RunContext, repeats: int = 5, firmware_dir=None, base=None, target=
     worst = [c for c in cases if c["kind"] == "synthetic" and c["ratio_dota"] < 0]
     if worst:
         res.notes.append(
-            "Honest worst case: " + ", ".join(f"{c['case']} ({c['ratio_dota']:.1%} vs image)" for c in worst)
-            + " - a delta can be larger than the image when the two are unrelated (incompressible noise)."
+            "Unfavourable cases: " + ", ".join(f"{c['case']} ({c['ratio_dota']:.1%} relative to the image)" for c in worst)
+            + ". A delta can exceed the image when the two inputs are unrelated, as with incompressible noise."
         )
     bad = [c["case"] for c in cases if not c["roundtrip_ok"]]
     if bad:
         res.status, res.reason = "failed", "round-trip failed for: " + ", ".join(bad)
     else:
-        res.notes.append("Every case reconstructs the target byte for byte (DOTA reference decoder and bsdiff4).")
+        res.notes.append("Every case reconstructs the target image byte for byte, using both the DOTA reference decoder and bsdiff4.")
     res.data = {"primary_case": p["case"], "block_size": BLOCK, "rates": rates}
     return res

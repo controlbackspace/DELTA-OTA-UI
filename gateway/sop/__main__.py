@@ -30,7 +30,7 @@ def step_preflight(ctx: RunContext, args) -> StepResult:
     rows = []
 
     def check(name: str, ok: bool, detail: str):
-        rows.append([name, "ok" if ok else "MISSING", detail])
+        rows.append([name, "Available" if ok else "Not found", detail])
         return ok
 
     check("Python", sys.version_info >= (3, 11), sys.version.split()[0])
@@ -54,8 +54,8 @@ def step_preflight(ctx: RunContext, args) -> StepResult:
     except ImportError:
         check("pyserial", False, "needed only for [hw] steps")
 
-    res.tables.append(Table("Preflight", ["Check", "Result", "Detail"], rows, "measured"))
-    hard_missing = [r for r in rows if r[1] == "MISSING" and r[0] in ("bsdiff4",)]
+    res.tables.append(Table("Software environment of the evaluation host", ["Component", "Status", "Detail"], rows, "measured"))
+    hard_missing = [r for r in rows if r[1] == "Not found" and r[0] in ("bsdiff4",)]
     if hard_missing:
         res.status, res.reason = "failed", "required component missing"
     return res

@@ -55,8 +55,10 @@ class StepTests(unittest.TestCase):
         self.assertEqual(r.status, "ok")
         self.assertEqual(self.ctx.meta["oscore_mode"], "emulated")
         self.assertIn("29 B", r.claims[0])
-        self.assertTrue(any("SKIPPED - device side" in n for n in r.notes))
-        self.assertTrue(any("Do not claim RFC 8613 compliance" in n for n in r.notes))
+        self.assertTrue(any("Device-side measurements were not performed" in n for n in r.not_performed))
+        self.assertTrue(any("not an implementation of RFC 8613" in n for n in r.limitations))
+        self.assertTrue(r.method and r.summary)
+        self.assertIn("29 B per block", r.summary)
         kinds = {t.caption.split(":")[0].split(" (")[0]: t.kind for t in r.tables}
         self.assertEqual(sum(t.kind == "cited" for t in r.tables), 1)
         self.assertEqual(sum(t.kind == "modelled" for t in r.tables), 1)
@@ -64,9 +66,9 @@ class StepTests(unittest.TestCase):
     def test_our_row_is_measured_overhead_and_the_others_are_labelled_cited(self):
         r = self.run_step()
         table = next(t for t in r.tables if t.caption.startswith("Per-message overhead"))
-        self.assertIn("measured", table.rows[0][-1])
+        self.assertIn("Measured", table.rows[0][-1])
         for row in table.rows[1:]:
-            self.assertTrue(row[-1].startswith("cited"), row)
+            self.assertTrue(row[-1].startswith("RFC"), row)
 
     def test_device_log_and_sop4_hardware_data_produce_the_esp32_claim(self):
         with tempfile.TemporaryDirectory() as d:
@@ -87,7 +89,7 @@ class StepTests(unittest.TestCase):
         flat = " ".join(" ".join(map(str, row)) for row in dev.rows)
         self.assertIn("60,000 B", flat)                    # stream peak heap, class2 definition
         self.assertIn("3,260 B", flat)
-        self.assertFalse(any("SKIPPED - device side" in n for n in r.notes))
+        self.assertFalse(any("Device-side measurements were not performed" in n for n in r.not_performed))
 
 
 if __name__ == "__main__":

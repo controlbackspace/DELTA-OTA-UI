@@ -203,6 +203,21 @@ def _layers_text(layers: dict) -> str:
 def run(ctx: RunContext, trials: int = 30, n_latency: int = 10, live_trials: int = 3,
         chain: bool = True, hardhat_port: int = 18545) -> StepResult:
     res = StepResult(sop="SOP3", title="Ledger reliability and revocation", mode="offline")
+    res.method = (
+        "The evaluation has three parts. (a) The smart-contract test suite was executed on a local Hardhat network. "
+        "(b) A software attack matrix injected nine classes of fault, with seeded trials, into the production verification "
+        "checks (the gateway's ledger-state and SHA-256 check, the per-block AES-CCM authentication, and the end-of-transfer "
+        "image digest); the layer that stopped each fault was recorded and a Wilson 95% interval computed for each "
+        "detection rate. (c) A fresh local chain and the production gateway process were used to measure the rejection of "
+        "unauthorized calls, the refusal of releases whose anchored hash does not match the payload, and the interval between "
+        "a revocation transaction and the gateway ceasing distribution, together with the gas cost of each call."
+    )
+    res.limitations += [
+        "Revocation latency was measured on a local chain with instantaneous block production; a deployed network adds "
+        "block-confirmation time. Detection by the gateway is bounded by its chain poll interval.",
+        "The end-of-transfer image digest is modelled by the SHA-256 of the rebuilt image; the corresponding check on the "
+        "device (esp_ota_end) is not exercised in this evaluation.",
+    ]
     failures: list[str] = []
     skipped: list[str] = []
 
@@ -216,18 +231,18 @@ def run(ctx: RunContext, trials: int = 30, n_latency: int = 10, live_trials: int
             "Smart-contract test suite (Hardhat)", ["Suite", "Tests", "Passed"],
             [[s, len(cs), sum(c["ok"] for c in cs)] for s, cs in sorted(by_suite.items())]
             + [["**Total**", t["tests"], t["passes"]]], "measured",
-            note=f"npx hardhat test; {t['duration_ms']} ms. Raw: raw/mocha.json, raw/hardhat-test.log.",
+            note=f"Executed with Hardhat in {t['duration_ms']} ms; the raw report is stored with the run.",
         ))
         res.files += ["raw/mocha.json", "raw/hardhat-test.log"]
         res.claims.append(
-            f"[measured] {t['passes']}/{t['tests']} contract tests pass: the fixed 2-of-3 threshold, one signature per "
-            "developer per round, authorization of every caller, finality of revocation, fresh rounds on re-proposal, "
-            "and the events the gateway relies on."
+            f"[measured] {t['passes']} of {t['tests']} contract tests passed. They cover the fixed 2-of-3 threshold, one "
+            "signature per developer per round, authorization of every caller, finality of revocation, fresh rounds on "
+            "re-proposal, and the events relied on by the gateway."
         )
         if t["failures"]:
             failures.append(f"{t['failures']} contract test(s) failed")
     except (ChainUnavailable, subprocess.SubprocessError) as e:
-        skipped.append(f"contract tests: {e}")
+        skipped.append(f"The contract test suite was not executed in this run ({e}).")
 
     # ---- B. attack matrix -----------------------------------------------------
     rows = run_matrix(trials)
@@ -247,8 +262,8 @@ def run(ctx: RunContext, trials: int = 30, n_latency: int = 10, live_trials: int
         f"Attack matrix ({trials} seeded trials per attack)",
         ["Attack", "Fault injected", "Stopped by", "Trials", "Stopped", "Detection rate (95% lower bound)",
          "Authentic frames accepted by AEAD"], table_rows, "measured",
-        note="Layers: gateway = ledger state + SHA-256 vs golden hash; frame = per-block AES-CCM tag; image = "
-             "end-of-transfer image digest (esp_ota_end), modelled here as the SHA-256 of the rebuilt image.",
+        note="Layers: gateway = ledger state and SHA-256 against the golden hash; frame = per-block AES-CCM tag; image = "
+             "end-of-transfer image digest, modelled as the SHA-256 of the rebuilt image.",
     ))
     layer_counts: dict[str, int] = {}
     for r in rows:
@@ -256,25 +271,26 @@ def run(ctx: RunContext, trials: int = 30, n_latency: int = 10, live_trials: int
             layer_counts[k] = layer_counts.get(k, 0) + v
     lo_all, _ = wilson_interval(stopped, total)
     res.claims.append(
-        f"[measured] {stopped}/{total} injected faults ({len(ATTACKS)} attack types x {trials} seeded trials) were "
-        f"stopped (detection rate ≥ {lo_all:.1%} at 95% confidence): gateway layer {layer_counts.get('gateway', 0)}, "
-        f"per-block AEAD layer {layer_counts.get('frame', 0)}, end-of-transfer image digest {layer_counts.get('image', 0)}."
+        f"[measured] Of {total} injected faults ({len(ATTACKS)} attack types, {trials} seeded trials each), {stopped} were "
+        f"stopped (detection rate of at least {lo_all:.1%} at 95% confidence). The gateway layer stopped "
+        f"{layer_counts.get('gateway', 0)}, the per-block authentication {layer_counts.get('frame', 0)} and the "
+        f"end-of-transfer image digest {layer_counts.get('image', 0)}."
     )
     replay = [r for r in rows if r["key"] in ("replay", "reorder")]
     if replay and all(r["authentic_frames_accepted_by_aead"] == r["trials"] for r in replay):
         res.notes.append(
-            "Finding: a replayed or reordered AUTHENTIC block passes the per-block AES-CCM check "
-            f"({sum(r['authentic_frames_accepted_by_aead'] for r in replay)}/{sum(r['trials'] for r in replay)}): "
-            "the nonce travels inside the frame and the current framing does not bind a block to its release or "
-            "position. These faults are stopped only by the end-of-transfer image digest. Real OSCORE sequence "
-            "numbers with a replay window (SOP 2) would stop them at the frame layer."
+            "Replayed or reordered authentic blocks were accepted by the per-block authentication "
+            f"({sum(r['authentic_frames_accepted_by_aead'] for r in replay)} of {sum(r['trials'] for r in replay)} trials), "
+            "because the nonce is carried inside the frame and the framing does not bind a block to its release or position. "
+            "These faults are stopped only by the end-of-transfer image digest. Sequence numbers with a replay window, as "
+            "specified for OSCORE, would reject them at the frame layer."
         )
     if stopped != total:
         failures.append(f"{total - stopped} injected fault(s) were NOT stopped")
 
     # ---- C. live chain + gateway ----------------------------------------------
     if not chain:
-        skipped.append("live chain part: --no-chain")
+        skipped.append("The live-chain measurements were not performed in this run (disabled by option).")
     else:
         try:
             live = run_chain_phase(ctx, trials, live_trials, n_latency, hardhat_port)
@@ -295,9 +311,9 @@ def run(ctx: RunContext, trials: int = 30, n_latency: int = 10, live_trials: int
                   "never staged; /version answers 4.01" if wh_ok == len(wh) else "see live_chain.json"]],
                 "measured"))
             res.claims.append(
-                f"[measured, local chain] {u_total}/{u_trials} state-changing calls by a non-developer were rejected by the "
-                f"contract, and {wh_ok}/{len(wh)} releases whose anchored hash did not match the payload were refused by the "
-                "gateway (never staged, /version stayed 4.01)."
+                f"[measured, local chain] {u_total} of {u_trials} state-changing calls by a non-developer were rejected by the "
+                f"contract, and {wh_ok} of {len(wh)} releases whose anchored hash did not match the payload were refused by the "
+                "gateway (never staged; devices continued to receive a refusal)."
             )
             if u_total != u_trials or not u["state_untouched"] or wh_ok != len(wh):
                 failures.append("a live-chain refusal did not hold")
@@ -316,9 +332,9 @@ def run(ctx: RunContext, trials: int = 30, n_latency: int = 10, live_trials: int
                 res.tables.append(Table(
                     f"Revoke-to-halt latency on a local chain (n={len(ok)} revokes)",
                     ["Stage", "Mean ± 95% CI (ms)", "Median", "p95", "Min", "Max"], lat_rows, "measured",
-                    note=f"The revoke is sent at a seeded random point of the gateway's {poll} s poll cycle (uniform phase), so "
-                         f"detection is expected to be spread between 0 and {poll} s. A local Hardhat node mines instantly, so "
-                         "chain confirmation understates a real network.",
+                    note=f"Each revocation was sent at a seeded random point of the gateway's {poll} s poll cycle, so "
+                         f"detection is expected to be spread between 0 and {poll} s. The local network produces blocks "
+                         "instantly, so chain confirmation understates a deployed network.",
                 ))
                 gas_rows = []
                 for name, key in (("proposeRelease", "gas_propose"), ("approveRelease (promotes to live)", "gas_approve"),
@@ -329,32 +345,35 @@ def run(ctx: RunContext, trials: int = 30, n_latency: int = 10, live_trials: int
                         gas_rows.append([name, f"{s['mean']:,.0f}", f"{s['min']:,.0f}", f"{s['max']:,.0f}", s["n"]])
                 res.tables.append(Table(
                     "Gas per call", ["Call", "Mean gas", "Min", "Max", "n"], gas_rows, "measured",
-                    note="The first proposal of a version writes fresh storage and costs more; re-proposals after a "
-                         "revoke reuse the slots (the max is the first proposal)."))
+                    note="The first proposal of a version writes new storage and costs more; re-proposals after a "
+                         "revocation reuse it (the maximum is the first proposal)."))
                 res.claims.append(
-                    f"[measured, local chain] After a revoke transaction was sent, the gateway stopped distributing the release "
-                    f"(destroyed its blocks and answered 4.03 to devices) in a median of {halt_s['median'] / 1000:.2f} s "
-                    f"(p95 {halt_s['p95'] / 1000:.2f} s, max {halt_s['max'] / 1000:.2f} s, n={len(ok)}; revokes sent at a random point of the "
-                    f"gateway's {poll} s poll cycle, so the worst case is about {poll} s plus processing). "
-                    f"Blocks left on disk after the halt: {sum(t['blocks_left'] for t in ok)}."
+                    f"[measured, local chain] After a revocation transaction was sent, the gateway stopped distributing the "
+                    f"release (it destroyed its encrypted blocks and answered devices with a revocation notice) after a median of "
+                    f"{halt_s['median'] / 1000:.2f} s (95th percentile {halt_s['p95'] / 1000:.2f} s, maximum "
+                    f"{halt_s['max'] / 1000:.2f} s, n={len(ok)}). The bound is the gateway's {poll} s poll interval plus "
+                    f"processing. Blocks remaining on disk after the halt: {sum(t['blocks_left'] for t in ok)}."
                 )
                 if any(t["blocks_left"] for t in ok):
                     failures.append("blocks remained on disk after a revoke")
             if bad:
                 failures.append(f"{len(bad)}/{len(live['revoke'])} revoke trials failed: {bad[0].get('error')}")
         except ChainUnavailable as e:
-            skipped.append(f"live chain part: {e}")
+            skipped.append(f"The live-chain measurements were not performed in this run ({e}).")
 
-    res.notes.append(
-        "Not measured here (needs the ESP32, a hardware step): the device's own rollback after a revoke "
-        "([Revoke] ... Rolled back) and its refusal of tampered blocks on real flash."
+    res.not_performed.append(
+        "The device's own rollback after a revocation and its rejection of tampered blocks on physical flash were not "
+        "measured; they require the target device."
     )
-    for s in skipped:
-        res.notes.append(f"SKIPPED - {s}")
+    res.not_performed += skipped
     if failures:
         res.status, res.reason = "failed", "; ".join(failures)
-    elif skipped:
-        res.reason = "partial: " + "; ".join(skipped)
+    # one-sentence headline for the summary table
+    res.summary = (
+        f"{stopped} of {total} injected faults were stopped"
+        + (f"; revocation halted distribution in a median of {halt_s['median'] / 1000:.1f} s" if 'halt_s' in locals() else "")
+        + "."
+    )
     return res
 
 

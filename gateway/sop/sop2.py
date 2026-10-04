@@ -182,13 +182,13 @@ def bench_handshake(n: int) -> dict:
 CITED_OVERHEAD = [
     # design, per-message overhead description, bytes (low, high), handshake note, source
     ("Delta-OTA framing (this work, OSCORE-style)", "13 B nonce + 16 B tag", (29, 29), "none: pre-shared key",
-     "measured: frame layout of security_engine.encrypt_blocks"),
+     "Measured: frame layout of the implemented framing"),
     ("OSCORE, RFC 8613 (AES-CCM-16-64-128)", "8 B tag + OSCORE option (flags + 1-5 B Partial IV)", (11, 17),
-     "none (key from a master secret; EDHOC optional)", "cited: RFC 8613 sections 5-6 - verify before quoting"),
+     "none (key derived from a master secret)", "RFC 8613, sections 5-6 (approximate: option length depends on the sequence number)"),
     ("TLS 1.2, AES-128-GCM record", "5 B header + 8 B explicit nonce + 16 B tag", (29, 29), "full handshake (measured below)",
-     "cited: RFC 5246 / RFC 5288"),
+     "RFC 5246; RFC 5288"),
     ("DTLS 1.2, AES-128-GCM record", "13 B header + 8 B explicit nonce + 16 B tag", (37, 37), "full handshake + cookie exchange",
-     "cited: RFC 6347 section 4.1 / RFC 5288"),
+     "RFC 6347, section 4.1; RFC 5288"),
 ]
 
 
@@ -228,11 +228,11 @@ def _device_section(res: StepResult, ctx: RunContext, factory_log: str | None, b
                      "excludes the DOTA decoder, see SOP 4)", f"{e['ram']:,} B"])
     if rows:
         res.tables.append(Table("Device side (ESP32)", ["Metric", "Value"], rows, "measured",
-                                note="Only what was captured: a supplied serial log (--factory-log) and/or the SOP 4 hardware run in this "
-                                     "run directory. The TLS figure is certificate-based HTTPS, not DTLS-PSK."))
+                                note="Device-side values come from the supplied serial capture and from the hardware run of "
+                                     "SOP 4 in the same evidence run. The TLS figure is for certificate-based HTTPS, not DTLS-PSK."))
     else:
-        res.notes.append("SKIPPED - device side: no --factory-log and no SOP 4 hardware data in this run. Gateway-host "
-                         "numbers above are NOT device numbers.")
+        res.not_performed.append("Device-side measurements were not performed in this run (no serial capture or hardware "
+                                 "measurement was available); the timings above are gateway-host timings.")
     return facts
 
 
@@ -260,8 +260,8 @@ def run(ctx: RunContext, ops: int = 2000, handshakes: int = 50, firmware_dir=Non
          row(f"TLS 1.2 handshake, both ends ({hs['cipher']}, X.509 verified)", hs["total_ms"], " ms"),
          row("   of which the client side", hs["client_ms"], " ms")],
         "measured",
-        note="Timed in-process on the gateway host (not the ESP32). The handshake runs between two in-memory endpoints, "
-             "so it contains CPU time only, no network time. Our framing needs no handshake at all.",
+        note="Timed in-process on the gateway host, not on the microcontroller. The handshake runs between two in-memory "
+             "endpoints and therefore contains CPU time only, with no network time. The evaluated framing performs no handshake.",
     ))
 
     ours = BLOCK  # per-block message; overhead in bytes
@@ -274,8 +274,8 @@ def run(ctx: RunContext, ops: int = 2000, handshakes: int = 50, firmware_dir=Non
         f"Per-message overhead and session set-up ({stream['blocks']}-block update)",
         ["Design", "Per-message overhead", "Bytes per message", f"Extra bytes for {stream['blocks']} messages", "Session set-up", "Source"],
         over_rows, "cited",
-        note="Our row is measured from the frame layout; the other rows are literature values (labelled cited) and must be "
-             "checked against the RFC text before they are quoted.",
+        note="The first row is derived from the implemented frame layout; the remaining rows are values from the cited "
+             "specifications.",
     ))
 
     hs_rows = []
@@ -283,41 +283,58 @@ def run(ctx: RunContext, ops: int = 2000, handshakes: int = 50, firmware_dir=Non
         air = airtime_s(hs["bytes"] + 4 * 28, bps)            # + UDP/IP headers for ~4 datagrams (lower bound)
         hs_rows.append([name, f"{air * 1000:.1f} ms", f"{air * 1000 + 2 * ASSUMED_RTT_MS:.1f} ms"])
     res.tables.append(Table(
-        f"Modelled network cost of ONE TLS 1.2 handshake ({hs['bytes']:,} B in {hs['flights']} flights) - ours is zero",
+        f"Network cost of one TLS 1.2 handshake ({hs['bytes']:,} B in {hs['flights']} flights); the evaluated framing has none",
         ["Link", "Handshake airtime", f"Airtime + 2 x {ASSUMED_RTT_MS} ms RTT (assumed)"], hs_rows, "modelled",
-        note="Lower bound: bits/rate for the measured handshake bytes plus UDP/IP headers; ignores loss and processing."))
+        note="Lower bound: bits divided by link rate for the measured handshake bytes plus UDP/IP headers; loss and processing are excluded."))
 
     facts = _device_section(res, ctx, factory_log, stream["blocks"])
 
     # ---------------- claims -----------------------------------------------------
+    ratio = hs["total_ms"]["mean"] / stream["seal_ms"]["mean"]
+    res.summary = (
+        f"The framing adds {aead['frame_overhead_bytes']} B per block and requires no handshake; a TLS 1.2 handshake costs "
+        f"{hs['bytes']:,} B in {hs['flights']} flights and about {ratio:.0f} times the CPU time of sealing the whole update "
+        "(gateway host)."
+    )
     res.claims.append(
-        f"[measured, gateway host] Sealing or opening one 1 KiB block with the pre-shared-key AES-CCM framing takes "
-        f"{fmt_ci(aead['seal_us'], 1, ' µs')} / {fmt_ci(aead['open_us'], 1, ' µs')}; the framing adds {aead['frame_overhead_bytes']} B "
-        f"per block and needs no handshake, whereas a complete TLS 1.2 handshake ({hs['version']}, {hs['cipher']}) costs "
-        f"{fmt_ci(hs['total_ms'], 2, ' ms')} of CPU and {hs['bytes']:,} B in {hs['flights']} flights - about "
-        f"{hs['total_ms']['mean'] / stream['seal_ms']['mean']:.0f}x the time to seal the whole {stream['blocks']}-block update."
+        f"[measured, gateway host] Sealing and opening one 1 KiB block with the pre-shared-key AES-CCM framing take "
+        f"{fmt_ci(aead['seal_us'], 1, ' µs')} and {fmt_ci(aead['open_us'], 1, ' µs')} respectively. The framing adds "
+        f"{aead['frame_overhead_bytes']} B per block and requires no handshake. A complete TLS 1.2 handshake "
+        f"({hs['version']}, {hs['cipher']}) costs {fmt_ci(hs['total_ms'], 2, ' ms')} of CPU time and {hs['bytes']:,} B in "
+        f"{hs['flights']} flights, which is about {ratio:.0f} times the time needed to seal the whole {stream['blocks']}-block update."
     )
     if "decrypt" in facts and "tls_ms" in facts:
         d = facts["decrypt"]
         total_ms = stream["blocks"] * d["avg_us"] / 1000
         res.claims.append(
-            f"[measured, ESP32] Decrypting a block takes {d['avg_us']:,} µs on average (n={d['n']}), i.e. {total_ms:.0f} ms for a "
-            f"{stream['blocks']}-block update, while a standard TLS connect on the same device takes {facts['tls_ms']:,.0f} ms and "
-            f"peaks at {facts['tls_heap']:,} B of heap."
+            f"[measured, ESP32] Decrypting a block takes {d['avg_us']:,} µs on average (n={d['n']}), or {total_ms:.0f} ms for a "
+            f"{stream['blocks']}-block update. A standard TLS connection on the same device takes {facts['tls_ms']:,.0f} ms to "
+            f"establish and peaks at {facts['tls_heap']:,} B of heap."
         )
     elif "decrypt" in facts:
         d = facts["decrypt"]
         res.claims.append(f"[measured, ESP32] Decrypting a block takes {d['avg_us']:,} µs on average (n={d['n']}, min {d['min_us']:,}, "
                           f"max {d['max_us']:,}).")
 
-    res.notes += [
-        "SCOPE: this is OSCORE-style AEAD framing, not RFC 8613 OSCORE. Absent compared with real OSCORE: HKDF context "
-        "derivation, sender sequence numbers with a replay window, AAD binding of release/block, and the OSCORE option. "
-        "Do not claim RFC 8613 compliance. (SOP 3 measured the consequence: authentic replayed/reordered blocks pass the per-block check.)",
-        "The measured handshake uses a minimal self-signed ECDSA certificate; a real certificate chain adds roughly "
-        "1-3 KB more, so the handshake bytes here are a lower bound. The host has AES hardware acceleration, so the "
-        "microsecond figures are not ESP32 figures.",
-        "The key is pre-shared and long-lived: there is no session key establishment, so there is no forward secrecy; the cost "
-        "saved is exactly the handshake a standard stack would pay.",
+    res.method = (
+        "Per-block AES-CCM sealing and opening (1 KiB blocks, 13-byte nonce, 16-byte tag), key set-up and the sealing of the "
+        "complete update stream were timed on the gateway host (repeated operations, 95% confidence intervals). A complete "
+        "TLS 1.2 handshake (ECDHE-ECDSA, certificate verified) was executed between two in-memory endpoints to obtain its CPU "
+        "time, byte count and number of flights. Per-message overheads of related protocols are taken from the cited "
+        "specifications. Device-side figures are included only where a serial capture or a hardware run was available."
+    )
+    res.notes.append(
+        "Replayed or reordered authentic blocks are not rejected by the per-block authentication of this framing "
+        "(see SOP 3); a sequence number with a replay window, as in OSCORE, would reject them at the frame layer."
+    )
+    res.limitations += [
+        "The framing evaluated is an OSCORE-style AEAD framing (pre-shared key, AES-CCM, per-block nonce, no handshake). "
+        "It is not an implementation of RFC 8613: it has no context derivation (HKDF), no sender sequence numbers with a "
+        "replay window, no binding of release and block position into the authenticated data, and no OSCORE option encoding.",
+        "The key is pre-shared and long-lived. There is no session-key establishment and therefore no forward secrecy; the "
+        "saving measured is the handshake a standard stack would perform.",
+        "The handshake measurement uses a minimal self-signed ECDSA certificate; certificate chains in deployment add "
+        "roughly 1-3 KB, so the handshake byte count is a lower bound.",
+        "Gateway-host timings use hardware AES acceleration and are not timings of the target microcontroller.",
     ]
     return res
