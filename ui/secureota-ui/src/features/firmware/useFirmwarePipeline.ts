@@ -126,7 +126,7 @@ export function useFirmwarePipeline() {
   const [goldenHash, setGoldenHash] = useState<string | null>(null);
   const [patchUrl, setPatchUrl] = useState<string | null>(null);
   const [ipfsCid, setIpfsCid] = useState<string | null>(null);
-  const [deltaSizeKb, setDeltaSizeKb] = useState<number | null>(null);
+  const [deltaSizeBytes, setDeltaSizeBytes] = useState<number | null>(null);
   const [compressionRatio, setCompressionRatio] = useState<string | null>(null);
 
   // Desktop Web3 Wallet & Smart Contract Integration
@@ -365,6 +365,16 @@ export function useFirmwarePipeline() {
       addLog(`[Firmware Mgr] Rejected ${file.name} — only .bin/.elf/.hex firmware files accepted.`, "error");
       return;
     }
+    // A new binary invalidates any delta computed from the previous one.
+    if (deltaGenerated) {
+      setDeltaGenerated(false);
+      setGoldenHash(null);
+      setDeltaSizeBytes(null);
+      setCompressionRatio(null);
+      setPatchUrl(null);
+      setIpfsCid(null);
+      setUrlConfigured(false);
+    }
     if (kind === "base") {
       setBaseFile(file);
       setBaseUploaded(true);
@@ -373,7 +383,6 @@ export function useFirmwarePipeline() {
       setTargetUploaded(true);
     }
     addLog(`[Firmware Mgr] Staging ${kind} binary ${file.name} — ${formatFileSize(file.size)}`, "info");
-    await delay(400);
     addLog(`[Firmware Mgr] ${kind === "base" ? "Base" : "Target"} binary staged successfully.`, "success");
   };
 
@@ -410,7 +419,7 @@ export function useFirmwarePipeline() {
         setGoldenHash(result.golden_hash);
         setPatchUrl(result.patch_url || null);
         setIpfsCid(result.ipfs_cid || null);
-        setDeltaSizeKb(+(result.patch_size / 1024).toFixed(1));
+        setDeltaSizeBytes(result.patch_size);
         setCompressionRatio(`${(result.compression_ratio * 100).toFixed(1)}% Reduction`);
         setReleases((prev) =>
           prev.map((r) =>
@@ -435,12 +444,15 @@ export function useFirmwarePipeline() {
 
     // Browser fallback: simulation mode (unchanged behavior)
     await delay(1200);
-    addLog("[Delta Engine] Delta patch generated — 45 KB (96.2% reduction)", "success");
+    // Simulation only: scale from the staged target when there is one, never a fixed figure.
+    const simBytes = Math.max(1, Math.round((targetFile?.size ?? 1_250_000) * 0.038));
+    const simRatio = targetFile?.size ? `${((1 - simBytes / targetFile.size) * 100).toFixed(1)}% Reduction` : "96.2% Reduction";
+    addLog(`[Delta Engine] Delta patch generated — ${formatFileSize(simBytes)} (simulated)`, "success");
     await delay(600);
     addLog("[SHA-256] Golden Hash computed: 0x8e5b0d3c...8e0f", "hash");
     setGoldenHash("0x8e5b0d3c9f4e2b6a7d0e3c5f8b2a4d6e9f1a3c5e7f9b1c3d5e7f9a2b4c6d8e0f");
-    setDeltaSizeKb(45);
-    setCompressionRatio("96.2% Reduction");
+    setDeltaSizeBytes(simBytes);
+    setCompressionRatio(simRatio);
     setDeltaGenerated(true);
     setLoadingStep(null);
   };
@@ -916,7 +928,7 @@ export function useFirmwarePipeline() {
     goldenHash,
     patchUrl,
     ipfsCid,
-    deltaSizeKb,
+    deltaSizeBytes,
     compressionRatio,
     wallet,
     chainSynced,

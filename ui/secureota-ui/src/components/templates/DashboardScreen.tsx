@@ -98,7 +98,7 @@ export const DashboardScreen: React.FC = () => {
           targetUploaded={pipeline.targetUploaded}
           deltaGenerated={pipeline.deltaGenerated}
           goldenHash={pipeline.goldenHash}
-          deltaSizeKb={pipeline.deltaSizeKb}
+          deltaSizeBytes={pipeline.deltaSizeBytes}
           compressionRatio={pipeline.compressionRatio}
           baseFile={pipeline.baseFile}
           targetFile={pipeline.targetFile}

@@ -15,7 +15,7 @@ export interface NodeConstraintsSidebarProps {
   targetUploaded: boolean;
   deltaGenerated: boolean;
   goldenHash: string | null;
-  deltaSizeKb: number | null;
+  deltaSizeBytes: number | null;
   compressionRatio: string | null;
   baseFile: File | null;
   targetFile: File | null;
@@ -34,7 +34,7 @@ export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
   targetUploaded,
   deltaGenerated,
   goldenHash,
-  deltaSizeKb,
+  deltaSizeBytes,
   compressionRatio,
   baseFile,
   targetFile,
@@ -159,11 +159,19 @@ export const NodeConstraintsSidebar: React.FC<NodeConstraintsSidebarProps> = ({
 
         <div className="mt-4 rounded-lg border border-[#1a2a3a] bg-[#070d1a] p-5 space-y-3 font-mono">
           {[
-            { label: "Base Binary (v1.0)", value: "1.200 MB", accent: "text-slate-300" },
-            { label: "Target Binary (v1.1)", value: "1.250 MB", accent: "text-slate-300" },
+            {
+              label: "Base Binary (v1.0)",
+              value: baseFile ? formatFileSize(baseFile.size) : "Not staged",
+              accent: baseFile ? "text-slate-300" : "text-slate-600",
+            },
+            {
+              label: "Target Binary (v1.1)",
+              value: targetFile ? formatFileSize(targetFile.size) : "Not staged",
+              accent: targetFile ? "text-slate-300" : "text-slate-600",
+            },
             {
               label: "Generated Delta Patch",
-              value: deltaGenerated && deltaSizeKb !== null ? `${deltaSizeKb.toFixed(1)} KB` : "Pending...",
+              value: deltaGenerated && deltaSizeBytes !== null ? formatFileSize(deltaSizeBytes) : "Pending...",
               accent: deltaGenerated ? "text-cyan-400" : "text-slate-600",
             },
             {
