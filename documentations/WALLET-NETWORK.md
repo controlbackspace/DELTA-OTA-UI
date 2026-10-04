@@ -148,6 +148,14 @@ so importing there is harmless. Only the contract, phone RPC and gateway address
   chain first. If another author approved a moment earlier you get "Already live" and the
   row refreshes; nothing is lost.
 
+**Signing with the phone (WalletConnect).** The console sends every read of the signing flow (block number,
+gas estimate, receipt polling) to **its own RPC** - the Funnel URL on a remote machine, `127.0.0.1:8545` on the node PC -
+and only the signature, the account and the chain id come from the phone. (Before this, WalletConnect asked its built-in
+`127.0.0.1:8545`, which fails with `Failed to fetch` on any PC without a local node.) A MetaMask *browser extension* is
+different: it reads through the RPC saved in its own Hardhat/31337 network, which must be the Funnel URL on a remote machine.
+If you still see `Could not reach the chain RPC (...)`, nothing was sent: check that `demo-up` is running (Funnel on) and
+that Console config holds the right RPC for this machine.
+
 **Tracking** is read-only and open to every author: **Track** in the header follows this
 console's staged target, or, on any other author's console, the most recently proposed
 version. It needs no wallet and no proposer role.

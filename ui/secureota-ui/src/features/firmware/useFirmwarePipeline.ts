@@ -49,11 +49,14 @@ const withTimeout = <T,>(p: Promise<T>, ms: number, label: string): Promise<T> =
 
 // Real-life revert copy: map raw ethers reasons to the one operator action
 // that actually fixes each failure. Falls back to the raw message.
-const explainTxError = (err: unknown): string => {
+const explainTxError = (err: unknown, rpcUrl?: string): string => {
   const msg = err instanceof Error ? err.message : "Contract call failed";
   const governance = governanceRevertText(msg);
   if (governance) return governance;
   const low = msg.toLowerCase();
+  // A browser-level network failure, not a contract/governance outcome: nothing was sent.
+  if (low.includes("failed to fetch") || low.includes("networkerror when attempting to fetch"))
+    return `Could not reach the chain RPC${rpcUrl ? ` (${rpcUrl})` : ""} - the request never got an answer, so nothing was sent. Check that the demo is up (Funnel on) and that the RPC URL in Console config is the right one for THIS machine.`;
   // Phone-wallet gas estimation via its own RPC (not our node): the user saw
   // this as code 5000 "Custom eth_gasPrice ... too many errors". Must precede
   // the generic gas branch or it mislabels every time.
@@ -589,7 +592,7 @@ export function useFirmwarePipeline() {
         // Poll loop will converge on next interval.
       }
     } catch (err: unknown) {
-      const msg = explainTxError(err);
+      const msg = explainTxError(err, wallet.rpcUrl);
       addLog(`[Smart Contract Error] ${msg}`, "error");
       if (ALLOW_OFFLINE_PROGRESSION) {
         // Still allow step progression in local testing
@@ -671,7 +674,7 @@ export function useFirmwarePipeline() {
       addLog(`[Kill Switch] ${version} revoked on-chain — the gateway destroys its artifacts on its next poll (≤5s) and devices get 4.01.`, "error");
       await refreshRelease(version); // chain truth only, no optimistic flip
     } catch (err: unknown) {
-      addLog(`[Kill Switch Error] ${explainTxError(err)}`, "error");
+      addLog(`[Kill Switch Error] ${explainTxError(err, wallet.rpcUrl)}`, "error");
       addLog("[Governance] Revoke BLOCKED — ledger unchanged (chain is truth).", "error");
       await refreshRelease(version);
     }
@@ -730,7 +733,7 @@ export function useFirmwarePipeline() {
         addLog(`[Governance] Approval recorded on-chain (${approvalsLabel(rec.approvalCount)}) — awaiting threshold for LIVE.`, "warning");
       }
     } catch (err: unknown) {
-      addLog(`[Approve Error] ${explainTxError(err)}`, "error");
+      addLog(`[Approve Error] ${explainTxError(err, wallet.rpcUrl)}`, "error");
       addLog("[Governance] Approval did not go through — the ledger now shows the chain's real state.", "error");
       await refreshRelease(version); // e.g. a second author's approval landed first
     }

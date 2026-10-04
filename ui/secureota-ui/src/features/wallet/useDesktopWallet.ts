@@ -14,6 +14,7 @@ import {
   parseVersionBytes32,
   truncateAddress,
 } from "../../lib/web3Payloads";
+import { createSplitProvider } from "./splitProvider";
 import type { ProposalEvent } from "../governance/releasePolicy";
 import { isLoopbackRpc, type ConsoleConfig } from "../governance/consoleConfig";
 import { getDesktopBridge } from "../../lib/desktop";
@@ -695,7 +696,11 @@ export function useDesktopWallet() {
     }
     const wc = getAppKitWalletProvider();
     if (wc) {
-      const provider = new ethers.BrowserProvider(wc);
+      // WalletConnect answers reads (eth_blockNumber, eth_estimateGas, receipts) from the chain's
+      // built-in RPC, hardcoded to 127.0.0.1:8545: that fails ("Failed to fetch") on any machine
+      // without a local node. Reads go to THIS console's RPC; only signing/accounts/chainId
+      // stay with the phone.
+      const provider = new ethers.BrowserProvider(createSplitProvider({ wallet: wc, readUrl: rpcUrl }));
       const net = await provider.getNetwork();
       if (Number(net.chainId) !== HARDHAT_CHAIN_ID) {
         throw new Error(
