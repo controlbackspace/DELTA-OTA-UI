@@ -44,12 +44,21 @@ def _refusal(req_id, method):
 class GuardHandler(http.server.BaseHTTPRequestHandler):
     server_version = "DeltaOTA-RpcGuard/1.0"
     upstream = "http://127.0.0.1:8545"
+    # HTTP/1.1 keep-alive: Tailscale Funnel's proxy then reuses a few
+    # connections instead of opening one per request. With HTTP/1.0 (close
+    # after every reply) MetaMask's parallel bursts made Funnel answer empty
+    # 502s (measured: 32 parallel -> 66 % success), which trips MetaMask's
+    # "RPC endpoint returned too many errors" breaker and blocks signing.
+    # Every reply carries Content-Length, which keep-alive requires.
+    protocol_version = "HTTP/1.1"
 
     def _reply(self, status: int, payload) -> None:
         body = json.dumps(payload).encode() if payload is not None else b""
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
+        if self.close_connection:
+            self.send_header("Connection", "close")   # tell the proxy not to reuse it
         self.end_headers()
         self.wfile.write(body)
 
@@ -66,6 +75,9 @@ class GuardHandler(http.server.BaseHTTPRequestHandler):
     def do_POST(self):
         length = int(self.headers.get("Content-Length") or 0)
         if length <= 0 or length > MAX_BODY_BYTES:
+            # Body left unread: close, or its bytes would be parsed as the next
+            # request on this kept-alive connection.
+            self.close_connection = True
             self._reply(413 if length > MAX_BODY_BYTES else 400,
                         {"jsonrpc": "2.0", "id": None,
                          "error": {"code": -32600, "message": "Invalid request size"}})
@@ -107,6 +119,11 @@ class GuardHandler(http.server.BaseHTTPRequestHandler):
         pass   # refusals are logged explicitly; per-call logs would flood the window
 
 
+class GuardServer(http.server.ThreadingHTTPServer):
+    request_queue_size = 128   # default 5; Funnel can open many connections at once
+    daemon_threads = True      # kept-alive connections never block shutdown
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Public JSON-RPC filter for the Hardhat node.")
     parser.add_argument("--port", type=int, default=8546)
@@ -114,7 +131,7 @@ def main() -> int:
     args = parser.parse_args()
     GuardHandler.upstream = args.upstream
     # Loopback only: the tunnel client connects locally; nothing else should.
-    server = http.server.ThreadingHTTPServer(("127.0.0.1", args.port), GuardHandler)
+    server = GuardServer(("127.0.0.1", args.port), GuardHandler)
     print(f"[RpcGuard] 127.0.0.1:{args.port} -> {args.upstream} "
           f"({len(ALLOWED_METHODS)} wallet methods allowed; node-side signing refused)")
     try:
