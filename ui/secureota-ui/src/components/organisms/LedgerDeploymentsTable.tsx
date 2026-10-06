@@ -1,7 +1,8 @@
 import * as React from "react";
-import { BookOpen, AlertTriangle, ShieldCheck, ShieldX } from "lucide-react";
+import { BookOpen, AlertTriangle, ShieldCheck, ShieldX, Download } from "lucide-react";
 import { CodeBadge } from "../atoms/CodeBadge";
 import { StatusPill } from "../atoms/StatusPill";
+import { PatchDetailsDialog } from "./PatchDetailsDialog";
 import { cn } from "../../lib/utils";
 import { truncateAddress } from "../../lib/web3Payloads";
 import {
@@ -53,6 +54,7 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
   authorized = null,
   signedByMe = {},
 }) => {
+  const [inspected, setInspected] = React.useState<LedgerRelease | null>(null);
   return (
     <div className="border-b border-[#1a2a3a] bg-[#060c18]">
       <div className="flex items-center gap-3 px-6 py-3 border-b border-[#1a2a3a]">
@@ -108,9 +110,17 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
                   )}
                 >
                   <td className="px-6 py-4">
-                    <CodeBadge variant={release.isRevoked ? "danger" : release.isLive ? "success" : "warning"}>
-                      {release.version}
-                    </CodeBadge>
+                    <button
+                      type="button"
+                      onClick={() => setInspected(release)}
+                      title="View the delta patch: download it and check it against the ledger"
+                      className="group inline-flex items-center gap-1.5 rounded cursor-pointer focus:outline-none focus-visible:ring-1 focus-visible:ring-cyan-400"
+                    >
+                      <CodeBadge variant={release.isRevoked ? "danger" : release.isLive ? "success" : "warning"}>
+                        {release.version}
+                      </CodeBadge>
+                      <Download className="w-3 h-3 text-slate-600 group-hover:text-cyan-400 transition-colors" />
+                    </button>
                   </td>
                   <td className="px-6 py-4 text-slate-400">
                     {proposer ? (
@@ -214,6 +224,15 @@ export const LedgerDeploymentsTable: React.FC<LedgerDeploymentsTableProps> = ({
           </tbody>
         </table>
       </div>
+      {inspected && (
+        <PatchDetailsDialog
+          version={inspected.version}
+          goldenHash={inspected.goldenHash}
+          patchUrl={inspected.ipfsUrl}
+          status={inspected.isRevoked ? "Revoked" : inspected.isLive ? "Live" : "Pending"}
+          onClose={() => setInspected(null)}
+        />
+      )}
     </div>
   );
 };

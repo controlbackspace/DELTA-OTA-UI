@@ -46,10 +46,14 @@ class PatchOnlyHandler(http.server.SimpleHTTPRequestHandler):
 
     def end_headers(self):
         # The console renderer is a file:// page: it may read the status file
-        # cross-origin, and must always get the live copy.
-        if _requested_name(self.path) == STATUS_FILE_NAME:
+        # cross-origin (and must always get the live copy) and download a patch to
+        # verify it against the ledger.
+        name = _requested_name(self.path)
+        if name == STATUS_FILE_NAME:
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-store")
+        elif fnmatch.fnmatchcase(name, PATCH_GLOB):
+            self.send_header("Access-Control-Allow-Origin", "*")
         super().end_headers()
 
     def list_directory(self, path):
