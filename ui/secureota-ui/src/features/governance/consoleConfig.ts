@@ -28,6 +28,14 @@ const LOOPBACK = /^https?:\/\/(127\.\d+\.\d+\.\d+|localhost|\[::1\])(:\d+)?\/?$/
 
 export const isLoopbackRpc = (url: string): boolean => LOOPBACK.test((url || "").trim());
 
+const PRIVATE_NODE =
+  /^http:\/\/(127\.\d+\.\d+\.\d+|localhost|\[::1\]|10\.\d+\.\d+\.\d+|192\.168\.\d+\.\d+|172\.(1[6-9]|2\d|3[01])\.\d+\.\d+|100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+)(:\d+)?\/?$/i;
+
+/** A node this console may sign on with its own unlocked accounts: plain http on
+ *  loopback or a private LAN / tailnet address. A public https URL (Funnel) never
+ *  qualifies - rpc_guard refuses node-side signing there by design. */
+export const isLocalNodeRpc = (url: string): boolean => PRIVATE_NODE.test((url || "").trim());
+
 /** Does a node answer chain 31337 at this address? Used to recognise the PC
  *  that RUNS the node: its console must keep reading 127.0.0.1:8545 instead of
  *  switching to the Funnel URL that only remote authors need. */

@@ -172,3 +172,7 @@ What persists is only the Tailscale login and the machine's `ts.net` name,
 which is why the MetaMask RPC never needs re-pasting. To remove everything:
 uninstall Tailscale, or delete the machine in the Tailscale admin console.
 On the cloudflared fallback nothing persists at all.
+
+## Offline demo signers (no internet at the venue)
+
+The phone wallet needs the WalletConnect relay, so it cannot pair without internet. When the console cannot reach the relay, the wallet dialog offers **Use offline demo signers**; it does not appear otherwise. It signs with the Hardhat test accounts held by the local node, only on a plain-http local or LAN node (chain 31337), never over the Funnel URL, and after a confirmation. The contract still enforces 2-of-3: two different authors must sign. A banner marks the mode, and **Turn off** ends it. Say in the defense that this mode uses test accounts on a local chain; the MetaMask path is the production one.

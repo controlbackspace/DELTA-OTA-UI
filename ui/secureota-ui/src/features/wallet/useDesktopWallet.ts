@@ -16,7 +16,8 @@ import {
 } from "../../lib/web3Payloads";
 import { createSplitProvider } from "./splitProvider";
 import type { ProposalEvent } from "../governance/releasePolicy";
-import { isLoopbackRpc, type ConsoleConfig } from "../governance/consoleConfig";
+import { isLocalNodeRpc, localNodeAnswers, type ConsoleConfig } from "../governance/consoleConfig";
+import { relayReachable } from "./relayProbe";
 import { getDesktopBridge } from "../../lib/desktop";
 
 // WalletConnect Project ID for Reown AppKit (public client identifier —
@@ -332,6 +333,13 @@ export function useDesktopWallet() {
     setIsConnecting(true);
     setStatusMessage("Opening WalletConnect QR Modal...");
     try {
+      if (!(await relayReachable())) {
+        // The phone path cannot work without the relay. Open our own dialog, which
+        // offers (never forces) the offline demo signers.
+        setStatusMessage("WalletConnect relay unreachable (no internet?) - the phone wallet cannot pair. Offline demo signers are available below.");
+        setIsQrModalOpen(true);
+        return;
+      }
       const modal = getAppKit();
       if (modal) {
         let before: string | null = null;
@@ -394,20 +402,37 @@ export function useDesktopWallet() {
 
   // Connect with a specific Hardhat test private key or account address directly (for rapid testing)
   // P0-4: dev-only — no-op with a loud status in production builds.
-  const connectDevAccount = useCallback(async (devIndex = 0) => {
-    const isDevBuild =
-      (import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env
-        ?.DEV === true;
-    if (!isDevBuild) {
-      setStatusMessage("Dev signers are disabled in production — connect an external wallet.");
-      throw new Error("Dev signers are disabled in production builds.");
-    }
+  // Offline demo signers: opt-in per session, local node only. Nothing here is
+  // reachable unless the operator is prompted and confirms (see WalletQrModal).
+  const offlineRef = useRef(false);
+  // True while the connected account is a node-held demo/dev account (not a wallet session). The
+  // AppKit state listener must not clear it: with no relay it keeps reporting "disconnected".
+  const devSessionRef = useRef(false);
+  const [offlineSigners, setOfflineSigners] = useState(false);
+  const devSignersAllowed = useCallback(
+    (url: string) => {
+      const isDevBuild =
+        (import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env
+          ?.DEV === true;
+      return isDevBuild || (offlineRef.current && isLocalNodeRpc(url));
+    },
+    []
+  );
+  const applyDevAccount = useCallback((devIndex = 0) => {
     const devAddr = HARDHAT_AUTHORIZED_DEVS[devIndex] || HARDHAT_AUTHORIZED_DEVS[0];
+    devSessionRef.current = true;
     setAddress(devAddr);
     setChainId(31337);
     setIsConnected(true);
     setStatusMessage(`Connected Dev #${devIndex + 1}: ${truncateAddress(devAddr)}`);
   }, []);
+  const connectDevAccount = useCallback(async (devIndex = 0) => {
+    if (!devSignersAllowed(rpcUrl)) {
+      setStatusMessage("Dev signers are disabled in production — connect an external wallet.");
+      throw new Error("Dev signers are disabled in production builds.");
+    }
+    applyDevAccount(devIndex);
+  }, [devSignersAllowed, rpcUrl, applyDevAccount]);
 
   // Verified session identity (challenge-response): the connected address is
   // a CLAIM until the operator signs a login challenge with the matching key
@@ -420,6 +445,7 @@ export function useDesktopWallet() {
   }, [address, contractAddress, rpcUrl]);
 
   const disconnect = useCallback(() => {
+    devSessionRef.current = false;
     setAddress(null);
     setChainId(null);
     setIsConnected(false);
@@ -437,6 +463,35 @@ export function useDesktopWallet() {
   }, []);
 
   const [signerOrigin, setSignerOrigin] = useState<SignerOrigin | null>(null);
+
+  /** One step: find the local node (the current RPC if it is local, else 127.0.0.1:8545), point the
+   *  console at it, turn the demo signers on and connect Dev #1. Ownership is verified automatically
+   *  (effect below), so Sign & Propose unlocks without any further click. */
+  const enableOfflineSigners = useCallback(async (): Promise<void> => {
+    const candidates = [...new Set([...(isLocalNodeRpc(rpcUrl) ? [rpcUrl] : []), "http://127.0.0.1:8545"])];
+    let chosen: string | null = null;
+    for (const c of candidates) {
+      if (await localNodeAnswers(c)) {
+        chosen = c;
+        break;
+      }
+    }
+    if (!chosen) {
+      throw new Error("No Hardhat node answering chain 31337 on this machine (127.0.0.1:8545) - start the node (demo-up) first.");
+    }
+    if (chosen !== rpcUrl) updateRpcUrl(chosen);
+    offlineRef.current = true;
+    setOfflineSigners(true);
+    applyDevAccount(0);
+    setStatusMessage("Offline demo signers ON - local chain only (Hardhat test accounts, not a production wallet).");
+  }, [rpcUrl, updateRpcUrl, applyDevAccount]);
+
+  const disableOfflineSigners = useCallback(() => {
+    offlineRef.current = false;
+    setOfflineSigners(false);
+    if (signerOrigin === "dev-node") disconnect();
+    setStatusMessage("Offline demo signers OFF.");
+  }, [signerOrigin, disconnect]);
 
   // Phone wallets (MetaMask Mobile) cannot reach our node until chain 31337
   // exists IN the phone with a reachable RPC. After an AppKit session
@@ -560,6 +615,11 @@ export function useDesktopWallet() {
     if (!modal) return;
     const sync = (s: { address?: string; isConnected?: boolean }) => {
       const addr = normalizeAddress(s.address);
+      // A live wallet session replaces a dev session; a "disconnected" report must not wipe one.
+      if (devSessionRef.current) {
+        if (s.isConnected === true && addr) devSessionRef.current = false;
+        else return;
+      }
       setAddress(addr);
       setIsConnected(s.isConnected === true && addr !== null);
       if (addr) {
@@ -713,10 +773,7 @@ export function useDesktopWallet() {
     // P0-4: dev-node fallback exists ONLY in dev builds. Production
     // (packaged app is always a prod build) is external-wallets-only —
     // no silent node signing, callers get a loud error instead.
-    const isDevBuild =
-      (import.meta as unknown as { env: Record<string, string | boolean | undefined> }).env
-        ?.DEV === true;
-    if (!isDevBuild) {
+    if (!devSignersAllowed(rpcUrl)) {
       throw new Error(
         "No wallet session — connect via Reown QR or a MetaMask extension on Hardhat Localhost (dev-node fallback is disabled in production)."
       );
@@ -731,7 +788,7 @@ export function useDesktopWallet() {
     }
     // Default to first account on the node
     return { signer: await jsonRpcProvider.getSigner(0), origin: "dev-node" as const };
-  }, [address, getInjectedProvider, rpcUrl]);
+  }, [address, getInjectedProvider, rpcUrl, devSignersAllowed]);
 
   /**
    * Prove ownership of the connected session address: sign a fresh login
@@ -799,6 +856,19 @@ export function useDesktopWallet() {
     setStatusMessage(`Identity verified: ${truncateAddress(checksummed)} (authorized dev, challenge-signed).`);
     return checksummed;
   }, [address, contractAddress, rpcUrl, getSigner]);
+
+  // Demo signers need no phone prompt, so there is nothing to wait for: verify the connected
+  // test account once per (account, contract, RPC). A failure is reported, never retried in a loop.
+  const autoVerifyTried = useRef<string | null>(null);
+  useEffect(() => {
+    if (!offlineSigners || !isConnected || !address || verifiedAddress) return;
+    const key = `${address}|${contractAddress}|${rpcUrl}`;
+    if (autoVerifyTried.current === key) return;
+    autoVerifyTried.current = key;
+    verifyIdentity().catch((err: unknown) => {
+      setStatusMessage(`Auto-verify failed: ${err instanceof Error ? err.message : String(err)}`);
+    });
+  }, [offlineSigners, isConnected, address, verifiedAddress, contractAddress, rpcUrl, verifyIdentity]);
 
   /**
    * Payload 1: proposeRelease(bytes32 version, bytes32 goldenHash, string ipfsUrl)
@@ -1035,7 +1105,7 @@ export function useDesktopWallet() {
   /** A remote RPC (Funnel/LAN) cannot sign: rpc_guard refuses eth_sendTransaction
    *  and eth_accounts, so the node-side "dev account" signer only exists when
    *  this console talks to its own local node. */
-  const canUseDevSigner = isLoopbackRpc(rpcUrl);
+  const canUseDevSigner = isLocalNodeRpc(rpcUrl);
 
   return {
     address,
@@ -1072,5 +1142,8 @@ export function useDesktopWallet() {
     fetchHasSigned,
     applyConsoleConfig,
     canUseDevSigner,
+    offlineSigners,
+    enableOfflineSigners,
+    disableOfflineSigners,
   };
 }

@@ -149,7 +149,9 @@ export const DashboardScreen: React.FC = () => {
                 label="Connect Wallet"
                 subLabel={
                   pipeline.walletConnected
-                    ? `Chain ${pipeline.wallet.chainId ?? "?"}`
+                    ? pipeline.wallet.offlineSigners
+                      ? "Demo signers (offline)"
+                      : `Chain ${pipeline.wallet.chainId ?? "?"}`
                     : "Phone QR"
                 }
                 icon={<Wallet className="w-3.5 h-3.5" />}
@@ -268,6 +270,9 @@ export const DashboardScreen: React.FC = () => {
         onOpenWalletConnect={() => void pipeline.wallet.openWalletModal()}
         statusMessage={pipeline.wallet.statusMessage}
         devSignerAvailable={pipeline.wallet.canUseDevSigner}
+        offlineSignersActive={pipeline.wallet.offlineSigners}
+        onEnableOfflineSigners={pipeline.wallet.enableOfflineSigners}
+        onDisableOfflineSigners={pipeline.wallet.disableOfflineSigners}
       />
     </div>
   );

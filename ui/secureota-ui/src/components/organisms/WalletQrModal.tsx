@@ -17,6 +17,7 @@ import { isValidEthereumAddress } from "../../lib/web3Payloads";
 import { StatusPill } from "../atoms/StatusPill";
 import { DevSignerCard } from "../molecules/DevSignerCard";
 import { isHttpsLoopback } from "../../features/wallet/useDesktopWallet";
+import { relayReachable } from "../../features/wallet/relayProbe";
 
 // P0-4: packaged app is always a prod build — dev signers only in dev.
 const isDevBuild =
@@ -31,7 +32,7 @@ export interface WalletQrModalProps {
   connectedChainId?: number | null;
   isVerified?: boolean;
   onVerifyIdentity: () => Promise<unknown>;
-  onSelectDevAccount: (devIndex: number) => void;
+  onSelectDevAccount: (devIndex: number) => void | Promise<void>;
   onDisconnect: () => void;
   onOpenWalletConnect: () => void;
   contractAddress: string;
@@ -44,6 +45,10 @@ export interface WalletQrModalProps {
   /** False when this console reads a REMOTE node (Funnel/LAN): the node-side
    *  dev accounts cannot sign there, so authors use their own wallet. */
   devSignerAvailable?: boolean;
+  /** Offline demo signers: opt-in, prompted only when the wallet relay is unreachable. */
+  offlineSignersActive?: boolean;
+  onEnableOfflineSigners?: () => Promise<void>;
+  onDisableOfflineSigners?: () => void;
 }
 
 export const WalletQrModal: React.FC<WalletQrModalProps> = ({
@@ -65,8 +70,40 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
   onUpdatePhoneRpcUrl,
   statusMessage,
   devSignerAvailable = true,
+  offlineSignersActive = false,
+  onEnableOfflineSigners,
+  onDisableOfflineSigners,
 }) => {
-  const devSigners = isDevBuild && devSignerAvailable;
+  const devSigners = (isDevBuild || offlineSignersActive) && devSignerAvailable;
+  // Only a failed relay probe surfaces the offline option; until then it does not exist in the UI.
+  const [relayOk, setRelayOk] = useState<boolean | null>(null);
+  const [offlineError, setOfflineError] = useState<string | null>(null);
+  const [devError, setDevError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isOpen) return;
+    let live = true;
+    setRelayOk(null);
+    void relayReachable().then((ok) => {
+      if (live) setRelayOk(ok);
+    });
+    return () => {
+      live = false;
+    };
+  }, [isOpen]);
+  const offerOffline = relayOk === false && !devSigners && !!onEnableOfflineSigners;
+  const handleEnableOffline = async () => {
+    const ok = window.confirm(
+      "Enable offline demo signers?\n\nThis signs with the Hardhat test accounts held by the local node. It works only on a local chain (31337) and is not a production wallet. The 2-of-3 rule still applies: two different authors must still sign."
+    );
+    if (!ok || !onEnableOfflineSigners) return;
+    try {
+      setOfflineError(null);
+      await onEnableOfflineSigners();
+      setActiveTab("hardhat");
+    } catch (err: unknown) {
+      setOfflineError(err instanceof Error ? err.message : "Could not enable offline demo signers.");
+    }
+  };
   const [qrDataUrl, setQrDataUrl] = useState<string>("");
   const [copied, setCopied] = useState<boolean>(false);
   const [activeTab, setActiveTab] = useState<"qr" | "hardhat" | "config">("qr");
@@ -339,6 +376,27 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                   </button>
                 </div>
               )}
+              {offerOffline && (
+                <div className="w-full p-3 rounded-lg bg-amber-950/30 border border-amber-900/50 text-left space-y-2 text-xs font-sans">
+                  <p className="text-amber-300">
+                    The WalletConnect relay is unreachable from this machine, so the phone wallet cannot pair.
+                  </p>
+                  {devSignerAvailable ? (
+                    <button
+                      type="button"
+                      onClick={() => void handleEnableOffline()}
+                      className="px-3 py-1.5 rounded-lg border border-amber-500/50 bg-amber-950/40 hover:bg-amber-900/40 text-amber-200 transition-all"
+                    >
+                      Use offline demo signers
+                    </button>
+                  ) : (
+                    <p className="text-slate-400">
+                      To sign offline, set Node RPC (Contract Config) to the laptop running the node over plain http, then try again.
+                    </p>
+                  )}
+                  {offlineError && <p className="text-rose-400">{offlineError}</p>}
+                </div>
+              )}
               {/* Instructions banner */}
               <div className="w-full flex items-start gap-2.5 p-3 rounded-lg bg-cyan-950/30 border border-cyan-800/40 text-left text-xs font-sans text-cyan-200">
                 <Info className="w-4 h-4 shrink-0 mt-0.5 text-cyan-400" />
@@ -418,6 +476,20 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
 
           {effectiveTab === "hardhat" && devSigners && (
             <div className="space-y-4 text-xs">
+              {offlineSignersActive && (
+                <div className="p-3 rounded-lg bg-amber-950/30 border border-amber-900/50 text-amber-200 font-sans flex items-center justify-between gap-3">
+                  <span>
+                    <strong>DEMO SIGNERS:</strong> local chain only (Hardhat test accounts, not a production wallet).
+                  </span>
+                  <button
+                    type="button"
+                    onClick={onDisableOfflineSigners}
+                    className="shrink-0 px-2 py-1 rounded border border-amber-700/60 hover:bg-amber-900/40 text-amber-100"
+                  >
+                    Turn off
+                  </button>
+                </div>
+              )}
               <div className="p-3 rounded-lg bg-slate-900/80 border border-slate-800 text-slate-300 font-sans space-y-1">
                 <p className="font-semibold text-white">2-of-3 Multi-Sig Authorized Developer Signers</p>
                 <p className="text-slate-400 text-[11px]">
@@ -425,6 +497,11 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                 </p>
               </div>
 
+              {devError && (
+                <p className="text-[11px] font-sans text-rose-400 bg-rose-950/30 p-2 rounded border border-rose-900/50">
+                  {devError}
+                </p>
+              )}
               <div className="space-y-2">
                 {HARDHAT_AUTHORIZED_DEVS.map((addr, idx) => (
                   <DevSignerCard
@@ -434,8 +511,15 @@ export const WalletQrModal: React.FC<WalletQrModalProps> = ({
                     isProposer={idx === 0}
                     isConnected={connectedAddress?.toLowerCase() === addr.toLowerCase()}
                     onSelect={() => {
-                      onSelectDevAccount(idx);
-                      onClose();
+                      setDevError(null);
+                      void (async () => {
+                        try {
+                          await onSelectDevAccount(idx);
+                          onClose();
+                        } catch (err: unknown) {
+                          setDevError(err instanceof Error ? err.message : "Could not connect this dev signer.");
+                        }
+                      })();
                     }}
                   />
                 ))}

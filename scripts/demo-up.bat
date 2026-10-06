@@ -5,8 +5,11 @@ REM   DeltaOTA-Node, DeltaOTA-Deploy, DeltaOTA-Artifacts, DeltaOTA-RpcGuard,
 REM   DeltaOTA-App (+ DeltaOTA-Tunnel only on the cloudflared fallback).
 REM Fresh chain every run: killing the node wipes state, so redeploy happens here.
 REM Companion: demo-down.bat closes all five windows.
-REM Usage: demo-up.bat [--skip-build]
+REM Usage: demo-up.bat [--skip-build] [--offline]
 REM   --skip-build  reuse the last desktop build (skip npm run build:app).
+REM   --offline     no internet needed: skip the tunnel (Tailscale/cloudflared), publish the node on the
+REM                 LAN address instead and print the Pi commands. The phone wallet is unavailable in
+REM                 this mode (it needs the WalletConnect relay); sign with the offline demo signers.
 REM Phone RPC: MetaMask Mobile needs a public HTTPS RPC. The tunnel exposes the
 REM RPC guard (gateway\rpc_guard.py, :8546), never the node itself - Hardhat's
 REM dev accounts are unlocked. Preferred: Tailscale Funnel = FIXED URL
@@ -24,14 +27,17 @@ mkdir "%ENVDIR%" 2>nul
 del /q "%ENVDIR%\contract-address.txt" "%ENVDIR%\tunnel-url.txt" "%ENVDIR%\deploy.log" "%ENVDIR%\tunnel.log" 2>nul
 
 set SKIP_BUILD=
-if not "%~1"=="" (
-  if /i "%~1"=="--skip-build" (
-    set SKIP_BUILD=1
-  ) else (
-    echo [FAIL] Unknown flag "%~1". Usage: demo-up.bat [--skip-build]
-    goto :fail
-  )
-)
+set OFFLINE=
+:parse_flags
+if "%~1"=="" goto :flags_done
+if /i "%~1"=="--skip-build" (set SKIP_BUILD=1& goto :next_flag)
+if /i "%~1"=="--offline" (set OFFLINE=1& goto :next_flag)
+echo [FAIL] Unknown flag "%~1". Usage: demo-up.bat [--skip-build] [--offline]
+goto :fail
+:next_flag
+shift
+goto :parse_flags
+:flags_done
 
 echo [Preflight] Checking required tools...
 where node >nul 2>nul
@@ -45,6 +51,7 @@ if not defined TUNNEL_MODE (
   where cloudflared >nul 2>nul
   if not errorlevel 1 set TUNNEL_MODE=cloudflared
 )
+if defined OFFLINE set TUNNEL_MODE=offline
 if not defined TUNNEL_MODE (echo [FAIL] Neither tailscale nor cloudflared found on PATH. See documentations\WALLET-NETWORK.md. & goto :fail)
 echo [Preflight] Phone tunnel: %TUNNEL_MODE%
 if not exist "%ROOT%\blockchain\package.json" (echo [FAIL] blockchain\package.json missing. Run from a full repo clone. & goto :fail)
@@ -82,6 +89,7 @@ start "DeltaOTA-RpcGuard" cmd /k "cd /d %ROOT%\gateway && python rpc_guard.py --
 powershell -NoProfile -Command "$d=(Get-Date).AddSeconds(30); while ((Get-Date) -lt $d) { try { $r=Invoke-RestMethod -Uri http://127.0.0.1:8546 -Method POST -Body '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}' -ContentType 'application/json' -TimeoutSec 2; if ($r.result -eq '0x7a69') { exit 0 } } catch { }; Start-Sleep -Seconds 2 }; exit 1"
 if errorlevel 1 (echo [FAIL] RPC guard did not answer chain 31337 within 30s. Read the DeltaOTA-RpcGuard window. & goto :fail)
 echo [4/6] RPC guard is up.
+if /i "%TUNNEL_MODE%"=="offline" goto :tunnel_offline
 if /i "%TUNNEL_MODE%"=="tailscale" goto :tunnel_tailscale
 
 echo [4/6] Starting cloudflared quick tunnel for :8546 (window: DeltaOTA-Tunnel; URL changes every run)...
@@ -90,6 +98,13 @@ echo [4/6] Waiting for tunnel URL (90s)...
 powershell -NoProfile -Command "$d=(Get-Date).AddSeconds(90); while ((Get-Date) -lt $d) { if (Test-Path '%ENVDIR%\tunnel.log') { $t=Get-Content '%ENVDIR%\tunnel.log' -Raw; if ($t -match 'https://[a-zA-Z0-9-]+\.trycloudflare\.com') { $Matches[0] | Out-File -LiteralPath '%ENVDIR%\tunnel-url.txt' -NoNewline -Encoding ascii; exit 0 } }; Start-Sleep -Seconds 2 }; exit 1"
 if errorlevel 1 (echo [FAIL] No tunnel URL within 90s. Read the DeltaOTA-Tunnel window. & goto :fail)
 goto :tunnel_ready
+
+:tunnel_offline
+call :detect_lan
+if not defined LANIP (echo [FAIL] Offline mode: no LAN IPv4 address found. Is this PC on the modem network? & goto :fail)
+set TUNNEL=http://%LANIP%:8545
+echo [4/6] Offline mode: no tunnel. Node reachable on the LAN at %TUNNEL%
+goto :tunnel_done
 
 :tunnel_tailscale
 echo [4/6] Publishing the RPC guard with Tailscale Funnel (fixed URL)...
@@ -105,6 +120,7 @@ set /p TUNNEL=<"%ENVDIR%\tunnel-url.txt"
 echo [4/6] Phone RPC: %TUNNEL%  - verifying chain 31337 over the public URL (60s)...
 powershell -NoProfile -Command "$d=(Get-Date).AddSeconds(60); while ((Get-Date) -lt $d) { try { $r=Invoke-RestMethod -Uri '%TUNNEL%' -Method POST -Body '{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"eth_chainId\",\"params\":[]}' -ContentType 'application/json' -TimeoutSec 5; if ($r.result -eq '0x7a69') { exit 0 } } catch { }; Start-Sleep -Seconds 3 }; exit 1"
 if errorlevel 1 (echo [WARN] %TUNNEL% did not answer yet - the phone may not reach the chain. First Funnel use can take a minute for DNS/TLS.) else (echo [4/6] Public RPC verified: chain 31337.)
+:tunnel_done
 
 echo [5/6] Building desktop app...
 if defined SKIP_BUILD echo [5/6] Skipped -- --skip-build passed, reusing last build in desktop\dist.
@@ -114,6 +130,7 @@ call npm run build:app
 if errorlevel 1 (echo [FAIL] Desktop build failed. See npm output above. & goto :fail)
 echo [5/6] Desktop build OK.
 :after_build
+call :detect_lan
 
 for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4 Address"') do (
   for /f "tokens=1" %%b in ("%%a") do (
@@ -134,26 +151,37 @@ echo ===============================================================
 echo  Contract : %CONTRACT%
 echo  LAN IP   : %LANIP%
 echo  Artifacts: http://%LANIP%:8000/  (serves gateway\artifacts)
-echo  Phone RPC: %TUNNEL%  (%TUNNEL_MODE%; MetaMask custom network, chain 31337)
+if /i not "%TUNNEL_MODE%"=="offline" echo  Phone RPC: %TUNNEL%  (%TUNNEL_MODE%; MetaMask custom network, chain 31337)
+if /i "%TUNNEL_MODE%"=="offline" echo  Node RPC : %TUNNEL%  - OFFLINE MODE: no tunnel, phone wallet unavailable. Sign with Offline demo signers.
 echo  App      : opening in the DeltaOTA-App window
 echo ---------------------------------------------------------------
 echo  Authors 2 and 3: paste this line into their console (Console config - Import config)
 set "GWFIELD="
+set "RPCFIELDS="rpc":"%TUNNEL%","phoneRpc":"%TUNNEL%""
+if /i "%TUNNEL_MODE%"=="offline" set "RPCFIELDS="rpc":"%TUNNEL%""
 if defined DELTA_GATEWAY_HOST set "GWFIELD=,"gatewayHost":"%DELTA_GATEWAY_HOST%""
-echo  DELTAOTA-CONFIG {"v":1,"contract":"%CONTRACT%","rpc":"%TUNNEL%","phoneRpc":"%TUNNEL%"%GWFIELD%}
-echo DELTAOTA-CONFIG {"v":1,"contract":"%CONTRACT%","rpc":"%TUNNEL%","phoneRpc":"%TUNNEL%"%GWFIELD%}> "%ENVDIR%\console-config.txt"
+echo  DELTAOTA-CONFIG {"v":1,"contract":"%CONTRACT%",%RPCFIELDS%%GWFIELD%}
+echo DELTAOTA-CONFIG {"v":1,"contract":"%CONTRACT%",%RPCFIELDS%%GWFIELD%}> "%ENVDIR%\console-config.txt"
 echo  (also saved to %ENVDIR%\console-config.txt; set DELTA_GATEWAY_HOST=^<Pi Tailscale IP^> before demo-up to include the gateway)
+if /i "%TUNNEL_MODE%"=="offline" echo ---------------------------------------------------------------
+if /i "%TUNNEL_MODE%"=="offline" echo  OFFLINE MODE - on the Pi run:
+if /i "%TUNNEL_MODE%"=="offline" echo    sudo ./install-gateway.sh rpc %TUNNEL%
+if /i "%TUNNEL_MODE%"=="offline" echo    sudo ./install-gateway.sh contract %CONTRACT%
+if /i "%TUNNEL_MODE%"=="offline" echo    sudo ./install-gateway.sh bind ^<Pi LAN IP^>
+if /i "%TUNNEL_MODE%"=="offline" echo    ./install-gateway.sh status
+if /i "%TUNNEL_MODE%"=="offline" echo  Console: Gateway address = the Pi LAN IP. ESP32 secrets.h gateway IP = the Pi LAN IP.
+if /i "%TUNNEL_MODE%"=="offline" echo  If a device cannot reach this PC, allow TCP 8545 and 8000 for the private network in Windows Firewall.
 echo ---------------------------------------------------------------
 echo  Next (judgment steps, NOT automated):
-echo   1. App Config tab: contract = %CONTRACT%, Node RPC = local (Phone RPC is pre-filled with the tunnel)
-echo   2. Phone MetaMask: chain 31337 RPC must be %TUNNEL% (Tailscale: set once, it never changes)
+if /i not "%TUNNEL_MODE%"=="offline" echo   1. App Config tab: contract = %CONTRACT%, Node RPC = local (Phone RPC is pre-filled with the tunnel)
+if /i not "%TUNNEL_MODE%"=="offline" echo   2. Phone MetaMask: chain 31337 RPC must be %TUNNEL% (Tailscale: set once, it never changes)
 echo   3. Console steps 1-5: the patch URL comes from step 3; the gateway serves whichever release goes live
 echo   4. demo-down.bat wipes the chain and closes all windows when done (fresh node next run)
 echo ===============================================================
 
 echo [6/6] Starting SecureOTA desktop app (window: DeltaOTA-App)...
 REM Inherited by the app window: the renderer reads it as the phone RPC.
-set "DELTA_PHONE_RPC_URL=%TUNNEL%"
+if /i not "%TUNNEL_MODE%"=="offline" set "DELTA_PHONE_RPC_URL=%TUNNEL%"
 start "DeltaOTA-App" cmd /k "cd /d %ROOT%\desktop && npm start"
 if defined DBL (
   echo.
@@ -171,3 +199,22 @@ echo Demo bring-up FAILED - see the [FAIL] line above for details.
 echo Press any key to close this window...
 pause >nul
 exit /b 1
+
+:detect_lan
+REM Sets LANIP. Prefer the adapter that has a default gateway (the modem/LAN link): the first
+REM IPv4 listed is often a Tailscale (100.x) or VirtualBox address the Pi cannot reach.
+for /f "delims=" %%i in ('powershell -NoProfile -Command "(Get-NetIPConfiguration | Where-Object { $_.IPv4DefaultGateway } | Select-Object -First 1).IPv4Address.IPAddress" 2^>nul') do if not defined LANIP set LANIP=%%i
+if defined LANIP exit /b 0
+REM Fallback: first non-loopback, non-link-local IPv4.
+for /f "tokens=2 delims=:" %%a in ('ipconfig ^| findstr /c:"IPv4 Address"') do (
+  for /f "tokens=1" %%b in ("%%a") do (
+    if not defined LANIP (
+      echo %%b | findstr /b "127\." >nul
+      if errorlevel 1 (
+        echo %%b | findstr /b "169\.254\." >nul
+        if errorlevel 1 set LANIP=%%b
+      )
+    )
+  )
+)
+exit /b 0

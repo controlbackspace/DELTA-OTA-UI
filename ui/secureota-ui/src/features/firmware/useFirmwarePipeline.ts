@@ -5,6 +5,7 @@ import type { LedgerRelease } from "../../components/organisms/LedgerDeployments
 import { deriveVersionTag, getDesktopBridge } from "../../lib/desktop";
 import { isAcceptedFirmwareFile } from "../../lib/firmwareFiles";
 import { formatFileSize } from "../../lib/utils";
+import { relayReachable } from "../wallet/relayProbe";
 import { useDesktopWallet } from "../wallet/useDesktopWallet";
 import {
   approvalsLabel,
@@ -485,6 +486,20 @@ export function useFirmwarePipeline() {
     // Real WalletConnect session via AppKit (genuine pairing QR inside the
     // AppKit modal). Step completion still syncs from wallet.isConnected, so
     // closing the modal unconnected leaves the step honestly incomplete.
+    if (!(await relayReachable())) {
+      // The phone path needs the WalletConnect relay (internet). Without it, fall back to the
+      // local node's test accounts, loudly labelled, instead of leaving the pipeline stuck.
+      addLog("[Signer] WalletConnect relay unreachable (no internet) - using OFFLINE DEMO SIGNERS: Hardhat test accounts on the local chain, not a production wallet. 2-of-3 still applies.", "warning");
+      try {
+        await wallet.enableOfflineSigners();
+        addLog("[Signer] Offline demo signers ON - Node RPC set to the local node, connected as Dev #1. Switch author in the wallet dialog (Authorized Dev Signers).", "success");
+      } catch (err) {
+        addLog(`[Signer] Offline demo signers unavailable: ${err instanceof Error ? err.message : "unknown error"}`, "error");
+        await wallet.openWalletModal();
+      }
+      setLoadingStep(null);
+      return;
+    }
     addLog("[Web3] Opening WalletConnect session (real pairing — scan the AppKit QR)...", "info");
     await wallet.openWalletModal();
     setLoadingStep(null);
