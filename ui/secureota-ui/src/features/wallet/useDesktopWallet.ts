@@ -405,6 +405,10 @@ export function useDesktopWallet() {
   // Offline demo signers: opt-in per session, local node only. Nothing here is
   // reachable unless the operator is prompted and confirms (see WalletQrModal).
   const offlineRef = useRef(false);
+  // Armed = step 4 goes straight to the local demo signers even when the relay is reachable.
+  // Set by the config line's demoSigners flag or the keyboard chord; never persisted.
+  const [demoArmed, setDemoArmed] = useState(false);
+  const armDemoSigners = useCallback(() => setDemoArmed(true), []);
   // True while the connected account is a node-held demo/dev account (not a wallet session). The
   // AppKit state listener must not clear it: with no relay it keeps reporting "disconnected".
   const devSessionRef = useRef(false);
@@ -489,6 +493,7 @@ export function useDesktopWallet() {
   const disableOfflineSigners = useCallback(() => {
     offlineRef.current = false;
     setOfflineSigners(false);
+    setDemoArmed(false);
     if (signerOrigin === "dev-node") disconnect();
     setStatusMessage("Offline demo signers OFF.");
   }, [signerOrigin, disconnect]);
@@ -1097,6 +1102,7 @@ export function useDesktopWallet() {
       if (config.contract) { updateContractAddress(config.contract); applied.push("contract"); }
       if (config.rpc) { updateRpcUrl(config.rpc); applied.push("rpc"); }
       if (config.phoneRpc) { updatePhoneRpcUrl(config.phoneRpc); applied.push("phoneRpc"); }
+      if (config.demoSigners) setDemoArmed(true);   // deliberately not listed in the import summary
       return applied;
     },
     [updateContractAddress, updateRpcUrl, updatePhoneRpcUrl]
@@ -1143,6 +1149,8 @@ export function useDesktopWallet() {
     applyConsoleConfig,
     canUseDevSigner,
     offlineSigners,
+    demoArmed,
+    armDemoSigners,
     enableOfflineSigners,
     disableOfflineSigners,
   };

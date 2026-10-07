@@ -28,3 +28,6 @@ setup.log
 gateway/*.spec
 # editor scratch files
 tempCodeRunnerFile.py
+
+# Claude Code local settings
+**/.claude/settings.local.json

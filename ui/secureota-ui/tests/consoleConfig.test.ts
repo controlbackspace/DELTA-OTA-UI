@@ -79,3 +79,14 @@ test("the node host is recognised by a local chain-31337 answer; anything else i
     new Promise((_r, rej) => init?.signal?.addEventListener("abort", () => rej(new Error("aborted"))))) as unknown as typeof fetch;
   assert.equal(await localNodeAnswers("http://127.0.0.1:8545", { fetchImpl: hang, timeoutMs: 30 }), false, "timeout");
 });
+
+test("the demoSigners flag is accepted alone and only when exactly true", () => {
+  const on = parseConsoleConfig('DELTAOTA-CONFIG {"v":1,"demoSigners":true}');
+  assert.equal(on.ok, true);
+  if (on.ok) assert.deepEqual(on.config, { demoSigners: true });
+  for (const bad of ['{"v":1,"demoSigners":"yes"}', '{"v":1,"demoSigners":1}', '{"v":1,"demoSigners":false}']) {
+    assert.equal(parseConsoleConfig(bad).ok, false, bad);
+  }
+  const mixed = parseConsoleConfig('{"v":1,"contract":"0x5FbDB2315678afecb367f032d93F642f64180aa3","demoSigners":true}');
+  assert.equal(mixed.ok && mixed.config.demoSigners === true && !!mixed.config.contract, true);
+});

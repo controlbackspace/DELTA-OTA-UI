@@ -486,10 +486,16 @@ export function useFirmwarePipeline() {
     // Real WalletConnect session via AppKit (genuine pairing QR inside the
     // AppKit modal). Step completion still syncs from wallet.isConnected, so
     // closing the modal unconnected leaves the step honestly incomplete.
-    if (!(await relayReachable())) {
-      // The phone path needs the WalletConnect relay (internet). Without it, fall back to the
-      // local node's test accounts, loudly labelled, instead of leaving the pipeline stuck.
-      addLog("[Signer] WalletConnect relay unreachable (no internet) - using OFFLINE DEMO SIGNERS: Hardhat test accounts on the local chain, not a production wallet. 2-of-3 still applies.", "warning");
+    if (wallet.demoArmed || !(await relayReachable())) {
+      // The phone path needs the WalletConnect relay (internet). Without it - or when the demo
+      // signers were armed on purpose - use the local node's test accounts, loudly labelled,
+      // instead of leaving the pipeline stuck.
+      addLog(
+        wallet.demoArmed
+          ? "[Signer] Demo signers armed - using Hardhat test accounts on the local chain, not a production wallet. 2-of-3 still applies."
+          : "[Signer] WalletConnect relay unreachable (no internet) - using OFFLINE DEMO SIGNERS: Hardhat test accounts on the local chain, not a production wallet. 2-of-3 still applies.",
+        "warning"
+      );
       try {
         await wallet.enableOfflineSigners();
         addLog("[Signer] Offline demo signers ON - Node RPC set to the local node, connected as Dev #1. Switch author in the wallet dialog (Authorized Dev Signers).", "success");
@@ -919,10 +925,37 @@ export function useFirmwarePipeline() {
       setGatewayHost(config.gatewayHost);
       applied.push("gatewayHost");
     }
-    addLog(`[Config] Imported: ${applied.join(", ")}.`, "success");
+    addLog(applied.length ? `[Config] Imported: ${applied.join(", ")}.` : "[Config] Imported.", "success");
     for (const why of parsed.skipped) addLog(`[Config] Skipped ${why}.`, "warning");
     return true;
   };
+
+  // Keyboard chord: Ctrl+Shift+D twice within 800 ms arms the local demo signers and, when no
+  // wallet is connected, switches them on. The state stays visible (log line, step 4 label).
+  const chordAt = useRef(0);
+  const { armDemoSigners, enableOfflineSigners } = wallet;
+  const walletIsConnected = wallet.isConnected;
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "d")) return;
+      e.preventDefault();
+      const now = Date.now();
+      const second = now - chordAt.current < 800;
+      chordAt.current = second ? 0 : now;
+      if (!second) return;
+      armDemoSigners();
+      addLog("[Signer] Demo signers armed (local chain, Hardhat test accounts). Step 4 will use them.", "warning");
+      if (!walletIsConnected) {
+        enableOfflineSigners()
+          .then(() => addLog("[Signer] Demo signers ON - Node RPC set to the local node, connected as Dev #1.", "success"))
+          .catch((err: unknown) =>
+            addLog(`[Signer] Demo signers unavailable: ${err instanceof Error ? err.message : "unknown error"}`, "error")
+          );
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [armDemoSigners, enableOfflineSigners, walletIsConnected, addLog]);
 
   return {
     updateState,

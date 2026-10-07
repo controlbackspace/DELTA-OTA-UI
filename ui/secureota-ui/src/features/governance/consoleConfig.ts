@@ -14,6 +14,8 @@ export interface ConsoleConfig {
   phoneRpc?: string;
   /** Gateway whose status feed to follow, e.g. the Pi's Tailscale IP. */
   gatewayHost?: string;
+  /** Arms the local demo signers for this session (see useDesktopWallet). Not shown in the UI. */
+  demoSigners?: boolean;
 }
 
 export type ParsedConfig =
@@ -86,7 +88,7 @@ export function parseConsoleConfig(text: string): ParsedConfig {
   const config: ConsoleConfig = {};
   const skipped: string[] = [];
 
-  const take = (key: keyof ConsoleConfig, valid: (v: string) => boolean, why: string, clean = (v: string) => v) => {
+  const take = (key: Exclude<keyof ConsoleConfig, "demoSigners">, valid: (v: string) => boolean, why: string, clean = (v: string) => v) => {
     const v = o[key];
     if (v === undefined || v === null || v === "") return;
     if (typeof v !== "string" || !valid(clean(v.trim()))) {
@@ -101,6 +103,8 @@ export function parseConsoleConfig(text: string): ParsedConfig {
   take("rpc", (v) => HTTP_ORIGIN.test(v), "expected http(s)://host[:port]", noSlash);
   take("phoneRpc", (v) => HTTPS_ORIGIN.test(v), "phone RPC must be https://host", noSlash);
   take("gatewayHost", (v) => HOST.test(v), "expected a host or IP, optionally :port");
+
+  if (o.demoSigners === true) config.demoSigners = true;
 
   if (Object.keys(config).length === 0) {
     return { ok: false, error: `No usable setting found${skipped.length ? " (" + skipped.join("; ") + ")" : ""}.` };
