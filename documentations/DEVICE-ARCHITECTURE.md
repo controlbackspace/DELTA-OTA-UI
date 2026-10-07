@@ -72,16 +72,25 @@ decompress, so the gateway re-packs the *verified* patch as **DOTA**
 (`gateway/secureota/gateway_runtime/delta_stream.py`; `apply_dota()` is the
 reference decoder):
 
-- 16-byte header: `"DOTA"`, version 1, `u32 new_size`
+- 16-byte header: `"DOTA"`, version 1, deflate window (log2, byte 5; 12 = 4 KB,
+  0 = legacy 32 KB), `u32 new_size`
 - raw-deflate body of records: `u32 add, u32 copy, i32 seek`, then `add` diff
   bytes (`new = old + diff`), then `copy` literal bytes, then `oldpos += seek`
+
+The deflate window is 4 KB, so the decoder's ring dictionary (`DICT_SIZE` in
+`DeltaDecoder`, `src/factory/main.cpp`) is 4 KB instead of tinfl's default 32 KB.
+That took the decoder from 48,984 B to 20,312 B and the updater's static RAM
+increment from 58,072 B to 29,400 B (57% of the 50 KiB Class 2 budget), measured
+by SOP 4. The device refuses a stream whose window is larger than its dictionary;
+older devices ignore byte 5 and have a 32 KB dictionary, so they still decode it.
 
 A full image (bench `DELTA_PAYLOAD`) becomes a single copy-only record, so it
 also installs into an empty ota_0.
 
 Measured on the demo app builds (v1.1 adds the GPIO4 touch feature, a new
 heartbeat and a heap report): v1.0 (279 KB) → v1.1 (289 KB) = BSDIFF40 22.4 KB
-→ DOTA 23.6 KB → **24 blocks**. The same update as a full image is 158 blocks.
+→ DOTA 23.6 KB → **24 blocks** (the same with a 32 KB or a 4 KB window). The same
+update as a full image is 168 blocks at the 4 KB window (158 at 32 KB).
 
 Gateway CoAP resources: `/patch?b=N` (blocks), `/version` (staged release or
 4.01), `/hello` (device report). Message IDs are random per boot. CoAP

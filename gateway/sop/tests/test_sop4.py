@@ -159,11 +159,12 @@ class StepTests(unittest.TestCase):
         text = " ".join(r.claims)
         self.assertIn("156,872 B of flash", text)
         self.assertIn("3.6 times", text)
-        self.assertIn("dominated by `g_decoder`", text)             # the decoder dominates the updater's RAM
+        self.assertIn("largest symbol is `g_decoder`", text)        # the decoder is the biggest RAM object
         self.assertIn("excludes this decoder", text)
         self.assertTrue(any("not measured in this run" in n for n in r.not_performed))
         self.assertTrue(any("lower bound" in n for n in r.limitations))
         self.assertTrue(r.method and "156,872 B of flash" in r.summary)
+        self.assertIn("58,072 B of static RAM", r.summary)
         # nothing operator-facing in the document text
         blob = " ".join(r.claims + r.notes + r.limitations + r.not_performed + [r.summary, r.method])
         for phrase in ("SKIPPED", "REPLACE", "FINDING", "must not be quoted"):

@@ -194,7 +194,8 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
     )
     res.summary = (
         f"An on-device Web3 client would add {wf:,} B of flash ({_pct(wf, fp.CLASS2_FLASH_BYTES)} of the Class 2 flash budget) "
-        f"against {uf:,} B for the whole Delta-OTA updater, before any heap for TLS."
+        f"against {uf:,} B for the whole Delta-OTA updater, before any heap for TLS. The updater adds "
+        f"{inc['updater']['ram']:,} B of static RAM ({_pct(inc['updater']['ram'], fp.CLASS2_RAM_BYTES)} of the Class 2 RAM budget)."
     )
 
     # What dominates the updater's static RAM (the engine-only row cannot see it).
@@ -208,19 +209,19 @@ def run(ctx: RunContext, firmware_dir: str | None = None, serial: str | None = N
             "Largest static-RAM symbols in the Delta-OTA updater (factory build)", ["Symbol", "Size (B)", "% of Class 2 RAM"],
             [[name, f"{size:,}", _pct(size, fp.CLASS2_RAM_BYTES)] for name, size in top], "measured"))
         biggest = top[0]
-        if biggest[1] >= 0.5 * fp.CLASS2_RAM_BYTES:
-            res.claims.append(
-                f"[measured] The static RAM of the updater is dominated by `{biggest[0]}` ({biggest[1]:,} B, "
-                f"{_pct(biggest[1], fp.CLASS2_RAM_BYTES)} of the 50 KiB Class 2 RAM budget on its own), which holds the DOTA "
-                f"decoder and its inflate dictionary. The updater adds {inc['updater']['ram']:,} B of static RAM in total "
-                f"({_pct(inc['updater']['ram'], fp.CLASS2_RAM_BYTES)} of the budget). "
-                + (f"The engine-only figure ({eng['ram']:,} B) covers only the DeltaOTAEngine symbols and excludes this decoder."
-                   if eng else "")
-            )
-            res.notes.append(
-                "The inflate dictionary accounts for most of this symbol. A smaller deflate window on the gateway, with a "
-                "correspondingly smaller circular dictionary on the device, would reduce it; this was not evaluated."
-            )
+        res.claims.append(
+            f"[measured] The updater adds {inc['updater']['ram']:,} B of static RAM over the Wi-Fi-only control "
+            f"({_pct(inc['updater']['ram'], fp.CLASS2_RAM_BYTES)} of the 50 KiB Class 2 RAM budget). The largest symbol is "
+            f"`{biggest[0]}` ({biggest[1]:,} B, {_pct(biggest[1], fp.CLASS2_RAM_BYTES)} of the budget on its own), which holds "
+            f"the DOTA decoder and its inflate dictionary. "
+            + (f"The engine-only figure ({eng['ram']:,} B) covers only the DeltaOTAEngine symbols and excludes this decoder."
+               if eng else "")
+        )
+        res.notes.append(
+            "The inflate dictionary is sized to the deflate window the gateway compresses with (4 KB). An earlier build with "
+            "tinfl's default 32 KB dictionary measured 48,984 B for this symbol and 58,072 B for the updater's static RAM "
+            "increment (113% of the budget); the 4 KB window cost no compression on the v1.0 -> v1.1 pair (24 blocks either way)."
+        )
 
     # ---- hardware: heap and timing ----------------------------------------------
     hw_parsed = None

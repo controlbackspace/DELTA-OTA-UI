@@ -7,7 +7,7 @@ to receive:
 
   delta         the DOTA stream built from the BSDIFF40 patch (what we ship)
   full (DOTA)   the whole new image as one copy-only DOTA record (our own
-                full-image path: deflated, 158 blocks for the real image)
+                full-image path: deflated, window-dependent block count)
   full (raw)    the whole new image, uncompressed (a classic full-image OTA)
 
 Everything about sizes, block counts and generation time is MEASURED. The wire
