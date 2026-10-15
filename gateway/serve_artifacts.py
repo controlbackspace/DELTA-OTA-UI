@@ -21,13 +21,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent / "secureota" / "gateway_runtime"))
 
 from secureota.release_builder.core import ARTIFACT_HTTP_PORT, gateway_lan_ip
-from gateway_config import status_path
+from gateway_config import metrics_path, status_path
 
 # The only files ever served: release delta patches by filename convention,
 # plus the gateway's live status (read by the console's deployment tracker;
 # holds no secrets - the key appears only as a fingerprint).
 PATCH_GLOB = "patch_*.bin"
 STATUS_FILE_NAME = "gateway_status.json"
+# Opt-in telemetry for the experiment (DELTA_METRICS=1 on the gateway): timings and process peaks, no secrets.
+METRICS_FILE_NAME = "gateway_metrics.json"
 
 
 def _requested_name(raw_path: str) -> str:
@@ -35,7 +37,7 @@ def _requested_name(raw_path: str) -> str:
 
 
 def _is_served(name: str) -> bool:
-    return fnmatch.fnmatchcase(name, PATCH_GLOB) or name == STATUS_FILE_NAME
+    return fnmatch.fnmatchcase(name, PATCH_GLOB) or name in (STATUS_FILE_NAME, METRICS_FILE_NAME)
 
 
 class PatchOnlyHandler(http.server.SimpleHTTPRequestHandler):
@@ -49,7 +51,7 @@ class PatchOnlyHandler(http.server.SimpleHTTPRequestHandler):
         # cross-origin (and must always get the live copy) and download a patch to
         # verify it against the ledger.
         name = _requested_name(self.path)
-        if name == STATUS_FILE_NAME:
+        if name in (STATUS_FILE_NAME, METRICS_FILE_NAME):
             self.send_header("Access-Control-Allow-Origin", "*")
             self.send_header("Cache-Control", "no-store")
         elif fnmatch.fnmatchcase(name, PATCH_GLOB):
@@ -66,6 +68,8 @@ class PatchOnlyHandler(http.server.SimpleHTTPRequestHandler):
         rel = path.split("?", 1)[0].split("#", 1)[0].lstrip("/")
         if Path(rel).name == STATUS_FILE_NAME:
             return str(status_path())   # the gateway's live feed lives outside artifacts/
+        if Path(rel).name == METRICS_FILE_NAME:
+            return str(metrics_path())
         candidate = (artifact_dir / rel).resolve()
         try:
             candidate.relative_to(artifact_dir)

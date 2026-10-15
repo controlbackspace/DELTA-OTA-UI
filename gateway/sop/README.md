@@ -81,3 +81,32 @@ bytes/flights). Literature overheads (RFC 8613, TLS 1.2, DTLS 1.2) are labelled 
 **modelled**. Device numbers come from a supplied serial capture of an update (`--factory-log`, the `[Metrics]` line)
 and from the SOP 4 hardware run in the same `--run` directory (TLS connect time and peak heap); without them the
 device side is reported as skipped. `python -m sop all` runs sop2 last for that reason.
+
+## Experiment Paper tables and the 60-cycle campaign
+The approved Experiment Paper (Tables 1 to 4) is filled from recorded data only; the table layouts are never changed
+(`thesis_tables.py` renders them). Statistics are the ones in Chapter 3 (`inference.py`).
+
+| Table | Filled by | Command (from `gateway\`) |
+|---|---|---|
+| 1 Volumetric payload | one static benchmark | `thesis_tables.table1(...)` (done) |
+| 2 Hardware and network | Scenarios A and B, ESP32 + this PC as gateway | `python -m sop.device_cycle --serial COM3 --lan-ip 192.168.100.94 --scenarios A,B` |
+| 3 Gateway profiling | gateway-only cycles on the Raspberry Pi | `python -m sop.device_cycle --table3 --gateway-url http://<pi>:8000 --lan-ip 192.168.100.94` |
+| 4 Deterministic validation | Scenarios C, D, E, no device | `python -m sop.host_scenarios --trials 60` (done) |
+
+Add `--dry-run` to print the plan. Runs are resumable (`--run <folder>` continues where it stopped). A cycle is `invalid`
+(harness or network fault, re-run up to 3 times) or `failed` (the update itself failed; it counts).
+
+**Before the device run** (not automated):
+1. Firmware: the updater must print `[Metrics2] decrypt_us= feed_us= flash_us= flash_bytes= stream_us= blocks=` after an update
+   (parsed by `serial_parse.py`; definitions in its comment). Rebuild, tag the git revision, reflash the factory image.
+2. ESP32 `include/secrets.h`: gateway IP = this PC's LAN address; the key in `DELTA_OTA_KEY_HEX` is the one the gateway will use.
+3. Windows Firewall (administrator): allow inbound UDP 5683 for the private profile; for Table 3 also TCP 8000 and 8545.
+   `netsh advfirewall firewall add rule name="Delta-OTA CoAP" dir=in action=allow protocol=UDP localport=5683 profile=private`
+4. Pi (Table 3): `pip install psutil pyperf`, gateway started with `DELTA_METRICS=1`, memory capped to 1 GB and CPU to 1.4 GHz
+   (record `free -m` and `vcgencmd get_config arm_freq`), RPC and contract set from the controller's printed commands.
+5. tshark: installed with Wireshark; capture works without administrator rights (`--iface` = adapter number, default 6 = Ethernet).
+
+Gateway telemetry (`gateway_runtime/metrics.py`) is off unless `DELTA_METRICS=1`; the artifact server then also serves
+`gateway_metrics.json`. Definitions: polling = mean contract-read time since the previous release; SHA-256 and AES-CCM are
+timed with `pyperf`'s clock and the garbage collector off; peak RAM and CPU are `psutil` samples (50 ms) from detection to staging,
+CPU as a share of total capacity.

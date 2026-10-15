@@ -17,6 +17,7 @@ from delta_stream import to_dota
 from simulation.simulated_ledger import DemoBlockchainPoller
 from gateway_config import apply_config
 import gateway_status
+from metrics import GatewayMetrics
 
 # Shared config file seeds unset env vars (console/.bat/service/exe all write
 # the same file). No behavior change when no file exists: every os.getenv
@@ -168,6 +169,8 @@ async def main_loop():
 
     # The security engine handles payload verification and encryption
     engine = SecurityEngine()
+    # Opt-in telemetry (DELTA_METRICS=1): timings and process peaks for the experiment's Table 3. A no-op otherwise.
+    metrics = GatewayMetrics.from_env()
 
     await start_coap_server()
     _start_artifact_server()
@@ -253,7 +256,7 @@ async def main_loop():
         if fetch_latest is None:
             target = TARGET_VERSION
         else:
-            target = await fetch_latest()
+            target = await metrics.timed("poll", fetch_latest())
             if target is None:
                 print("[Gateway] Ledger unreachable (node offline?). Waiting - "
                       "will retry next poll.")
@@ -271,7 +274,7 @@ async def main_loop():
 
         gateway_status.event_once("target", f"Following {target} (newest live release on the chain)",
                                   target_version=target)
-        release_data = await poller.fetch_firmware_release(target)
+        release_data = await metrics.timed("poll", poller.fetch_firmware_release(target))
 
         # Ledger unreachable (node offline, RPC error): this is WAITING, not
         # failure. Warn, sleep, and keep polling indefinitely - the gateway
@@ -320,6 +323,7 @@ async def main_loop():
             continue
 
         if release_data["isLive"] is True and release_data["version"] != installed_version:
+            metrics.window_begin()
             print(f"Success! New Update ({release_data['version']}) is Live.")
             gateway_status.event(f"{release_data['version']} is live on-chain - downloading and verifying")
 
@@ -341,7 +345,7 @@ async def main_loop():
                 source_url = SIM_PAYLOAD_URL if SIM_LEDGER else release_data.get("ipfsUrl", "")
                 if SIM_LEDGER:
                     print(f"[Network] SIM_LEDGER payload resolves to {source_url}.")
-                payload_bytes = await asyncio.to_thread(_download_patch, source_url)
+                payload_bytes = await metrics.timed("download", asyncio.to_thread(_download_patch, source_url))
                 if payload_bytes is None:
                     gateway_status.event(f"Download of {release_data['version']} failed - will retry",
                                          gateway_state="download-failed")
@@ -350,7 +354,9 @@ async def main_loop():
                 # Hash the DOWNLOADED bytes against the golden hash before
                 # anything touches disk: transport-substituted bytes fail here,
                 # never written, never served.
-                if hashlib.sha256(payload_bytes).hexdigest() != release_data["goldenHash"]:
+                with metrics.span("sha"):
+                    payload_digest = hashlib.sha256(payload_bytes).hexdigest()
+                if payload_digest != release_data["goldenHash"]:
                     print("[Security] FATAL: Downloaded bytes do not match golden hash. "
                           "Payload destroyed (never written).")
                     gateway_status.event(f"{release_data['version']}: downloaded bytes do not match the on-chain golden hash - refused",
@@ -388,7 +394,8 @@ async def main_loop():
                 # rebuilds the new app from its ota_1 backup + this stream).
                 # A full image (DELTA_PAYLOAD bench path) becomes one copy record.
                 try:
-                    dota_bytes = to_dota(Path(payload_path).read_bytes())
+                    with metrics.span("to_dota"):
+                        dota_bytes = to_dota(Path(payload_path).read_bytes())
                 except (ValueError, OSError) as e:
                     print(f"[Delta] FATAL: payload is not a usable patch/image ({e}). Not served.")
                     ENCRYPTED_PATCH.unlink(missing_ok=True)
@@ -405,7 +412,8 @@ async def main_loop():
                       f"{len(dota_bytes)} B DOTA.")
                 gateway_status.event(f"Device stream built: {len(dota_bytes)} B DOTA")
 
-                block_count = engine.encrypt_blocks(dota_path, BLOCKS_DIR, PRE_SHARED_KEY)
+                with metrics.span("encap"):
+                    block_count = engine.encrypt_blocks(dota_path, BLOCKS_DIR, PRE_SHARED_KEY)
 
                 installed_version = release_data["version"]
 
@@ -421,6 +429,8 @@ async def main_loop():
                                       staged_version=installed_version,
                                       blocks_total=block_count,
                                       staged_at=time.time())
+                metrics.finish_release(installed_version, blocks=block_count, stream_bytes=len(dota_bytes),
+                                       payload_bytes=Path(payload_path).stat().st_size)
             else:
                 print("Hash Mismatch!")
                 ENCRYPTED_PATCH.unlink(missing_ok=True)

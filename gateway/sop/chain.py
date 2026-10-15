@@ -60,8 +60,9 @@ class Tx:
 
 
 class HardhatNode:
-    def __init__(self, port: int, log_path: Path):
+    def __init__(self, port: int, log_path: Path, bind: str = "127.0.0.1"):
         self.port = port
+        self.bind = bind
         self.log_path = log_path
         self.proc: subprocess.Popen | None = None
         self.url = f"http://127.0.0.1:{port}"
@@ -79,7 +80,7 @@ class HardhatNode:
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log = open(self.log_path, "wb")
         self.proc = subprocess.Popen(
-            [npx, "hardhat", "node", "--port", str(self.port)],
+            [npx, "hardhat", "node", "--port", str(self.port)] + (["--hostname", self.bind] if self.bind != "127.0.0.1" else []),
             cwd=BLOCKCHAIN_DIR, stdout=log, stderr=subprocess.STDOUT,
         )
         w3 = Web3(Web3.HTTPProvider(self.url, request_kwargs={"timeout": 3}))

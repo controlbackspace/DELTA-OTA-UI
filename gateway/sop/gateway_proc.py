@@ -28,7 +28,11 @@ def poll_interval_s() -> int | None:
 
 
 class GatewayProc:
-    def __init__(self, rpc_url: str, contract: str, work_dir: Path, log_path: Path):
+    def __init__(self, rpc_url: str, contract: str, work_dir: Path, log_path: Path, *,
+                 bind: str = COAP_HOST, key_hex: str | None = None, artifact_server: bool = False,
+                 extra_env: dict | None = None):
+        self.bind, self.key_hex, self.artifact_server = bind, key_hex, artifact_server
+        self.extra_env = dict(extra_env or {})
         self.work = Path(work_dir)
         self.log_path = Path(log_path)
         self.rpc_url, self.contract = rpc_url, contract
@@ -50,11 +54,17 @@ class GatewayProc:
             "DELTA_ARTIFACT_DIR": str(self.artifacts),
             "DELTA_STATUS_FILE": str(self.status_file),
             "DELTA_USE_TEST_KEY": "1",                      # published bench key, test only
-            "DELTA_BIND_ADDR": COAP_HOST,
+            "DELTA_BIND_ADDR": self.bind,
             "DELTA_NO_ARTIFACT_SERVER": "1",
             "SIM_LEDGER": "0",                              # a user's gateway.json must not switch on the simulator
             "PYTHONUNBUFFERED": "1",
         })
+        if self.key_hex:                                    # a real device: its provisioned key, not the bench key
+            env.pop("DELTA_USE_TEST_KEY", None)
+            env["DELTA_OTA_KEY"] = self.key_hex
+        if self.artifact_server:                            # serve patch_*.bin over HTTP :8000 like a deployed gateway
+            env.pop("DELTA_NO_ARTIFACT_SERVER", None)
+        env.update(self.extra_env)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         log = open(self.log_path, "wb")
         self.proc = subprocess.Popen(

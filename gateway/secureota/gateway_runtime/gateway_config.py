@@ -60,6 +60,12 @@ def status_path() -> Path:
     return Path(override) if override else config_path().parent / "gateway_status.json"
 
 
+def metrics_path() -> Path:
+    """Where the gateway writes gateway_metrics.json (opt-in telemetry): next to the status file."""
+    override = os.environ.get("DELTA_METRICS_FILE")
+    return Path(override) if override else status_path().parent / "gateway_metrics.json"
+
+
 def load_config() -> dict:
     """File values merged under live environment variables (env wins)."""
     try:

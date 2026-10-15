@@ -3,3 +3,5 @@ web3
 aiocoap
 cryptography
 pyserial
+psutil
+pyperf

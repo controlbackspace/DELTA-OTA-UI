@@ -17,6 +17,17 @@ WEB3 = re.compile(
     r" ok=([01])(?: why=(\S+))?"
     r"(?: approvals=(\d+) live=([01]) revoked=([01]))?"
 )
+# Added for the experiment's Table 2: the device's busy time and flash writes during one update stream.
+#   decrypt_us   time in AES-CCM decryption of all blocks
+#   feed_us      time in the DOTA decoder (inflate + merge + flash writes, incl. esp_ota_begin's erase)
+#   flash_us     time inside esp_ota_begin + esp_ota_write (a part of feed_us)
+#   flash_bytes  bytes written to flash;  stream_us  first accepted block -> last;  blocks  blocks decoded
+METRICS2 = re.compile(
+    r"\[Metrics2\] decrypt_us=(\d+) feed_us=(\d+) flash_us=(\d+) flash_bytes=(\d+) stream_us=(\d+) blocks=(\d+)")
+RECONSTRUCTED = re.compile(r"\[Delta\] Reconstructed (\d+) bytes, esp_ota_end OK")
+UPDATE_FAILED = re.compile(r"\[OTA\] Update to (\S+) FAILED: (.*)")
+WIFI_IP = re.compile(r"\[WiFi\] Connected\. IP=(\S+)")
+VERSION_ANSWER = re.compile(r"\[OTA\] (Gateway did not answer /version|Gateway has no release staged)")
 BANNER = re.compile(r"=== (Delta-OTA updater|SOP4 baseline[^=]*)")
 APP_VERSION = re.compile(r"\[Health\] Application: (\S+)")
 UPDATE = re.compile(r"\[OTA\] Update available: (\S+) -> (\S+)")
@@ -28,7 +39,8 @@ def split_stamp(line: str) -> tuple[float | None, str]:
 
 
 def parse_log(text: str) -> dict:
-    out = {"mem": [], "metrics": [], "web3": [], "banners": [], "app_version": None, "updates": []}
+    out = {"mem": [], "metrics": [], "web3": [], "banners": [], "app_version": None, "updates": [],
+           "metrics2": [], "reconstructed": [], "update_failed": [], "wifi_ip": None, "app_versions": [], "no_release": []}
     for raw in text.splitlines():
         t, line = split_stamp(raw)
         if m := MEM.search(line):
@@ -47,8 +59,21 @@ def parse_log(text: str) -> dict:
             })
         elif m := BANNER.search(line):
             out["banners"].append({"t": t, "text": m.group(1).strip()})
+        elif m := METRICS2.search(line):
+            d, f, fl, fb, st, bl = (int(g) for g in m.groups())
+            out["metrics2"].append({"t": t, "decrypt_us": d, "feed_us": f, "flash_us": fl, "flash_bytes": fb,
+                                    "stream_us": st, "blocks": bl})
+        elif m := RECONSTRUCTED.search(line):
+            out["reconstructed"].append({"t": t, "bytes": int(m.group(1))})
+        elif m := UPDATE_FAILED.search(line):
+            out["update_failed"].append({"t": t, "version": m.group(1), "why": m.group(2).strip()})
+        elif m := WIFI_IP.search(line):
+            out["wifi_ip"] = m.group(1)
+        elif m := VERSION_ANSWER.search(line):
+            out["no_release"].append({"t": t, "why": m.group(1)})
         elif m := APP_VERSION.search(line):
             out["app_version"] = m.group(1)
+            out["app_versions"].append({"t": t, "version": m.group(1)})
         elif m := UPDATE.search(line):
             out["updates"].append({"t": t, "from": m.group(1), "to": m.group(2)})
     return out
