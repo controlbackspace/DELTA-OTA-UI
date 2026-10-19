@@ -172,3 +172,101 @@ def success_run_trials(reliability: float, confidence: float) -> int:
     if not (0.0 < reliability < 1.0 and 0.0 < confidence < 1.0):
         raise ValueError("reliability and confidence must be between 0 and 1")
     return math.ceil(math.log(1.0 - confidence) / math.log(reliability))
+
+
+# ---- supporting statistics for Chapter 4 (not equations of Chapter 3) -----------------------------
+
+def paired_ci95(first, second) -> dict:
+    """95% confidence interval of the mean paired difference, with the t critical value for n - 1 degrees of freedom."""
+    r = paired_t_test(first, second)
+    n, md, sd = r["n"], r["mean_difference"], r["sd_of_differences"]
+    t_crit = _t_critical(n - 1)
+    half = t_crit * sd / math.sqrt(n)
+    return {"t_critical": t_crit, "low": md - half, "high": md + half}
+
+
+def _t_critical(df: int, two_sided_alpha: float = 0.05) -> float:
+    """Student t quantile by bisection on the exact p-value (df >= 1)."""
+    lo, hi = 0.0, 1000.0
+    for _ in range(200):
+        mid = (lo + hi) / 2.0
+        if t_two_sided_p(mid, df) > two_sided_alpha:
+            lo = mid
+        else:
+            hi = mid
+    return (lo + hi) / 2.0
+
+
+def effect_size_dz(first, second) -> float:
+    """Cohen's dz for paired samples: mean difference over the standard deviation of the differences."""
+    r = paired_t_test(first, second)
+    if r["degenerate"]:
+        raise ValueError("every difference is identical: dz is undefined")
+    return r["mean_difference"] / r["sd_of_differences"]
+
+
+def sign_test_p(first, second) -> dict:
+    """Exact two-sided sign test on the paired differences (ties are dropped)."""
+    d = [a - b for a, b in zip(first, second) if a != b]
+    n = len(d)
+    if n == 0:
+        raise ValueError("all pairs are tied")
+    below = sum(1 for x in d if x < 0)
+    k = min(below, n - below)
+    p = min(1.0, 2.0 * sum(math.comb(n, i) for i in range(k + 1)) / 2 ** n)
+    return {"n": n, "first_lower": below, "p_two_sided": p}
+
+
+def pearson_r(xs, ys) -> float:
+    """Pearson correlation coefficient."""
+    x, y = list(xs), list(ys)
+    if len(x) != len(y) or len(x) < 2:
+        raise ValueError("need two samples of the same length (at least 2)")
+    mx, my = mean(x), mean(y)
+    sxx = math.fsum((a - mx) ** 2 for a in x)
+    syy = math.fsum((b - my) ** 2 for b in y)
+    if sxx == 0 or syy == 0:
+        raise ValueError("a constant sample has no correlation")
+    return math.fsum((a - mx) * (b - my) for a, b in zip(x, y)) / math.sqrt(sxx * syy)
+
+
+def linear_slope(xs, ys) -> float:
+    """Least-squares slope of y on x."""
+    x, y = list(xs), list(ys)
+    mx, my = mean(x), mean(y)
+    sxx = math.fsum((a - mx) ** 2 for a in x)
+    if sxx == 0:
+        raise ValueError("x is constant")
+    return math.fsum((a - mx) * (b - my) for a, b in zip(x, y)) / sxx
+
+
+def fisher_exact_two_sided(a_fail: int, a_n: int, b_fail: int, b_n: int) -> float:
+    """Two-sided Fisher exact test on 2 x 2 failure counts (sum of all tables no more likely than the observed one)."""
+    n, k = a_n + b_n, a_fail + b_fail
+
+    def prob(x: int) -> float:
+        return math.comb(k, x) * math.comb(n - k, a_n - x) / math.comb(n, a_n)
+
+    p0 = prob(a_fail)
+    return min(1.0, sum(prob(x) for x in range(max(0, k - b_n), min(k, a_n) + 1) if prob(x) <= p0 * (1 + 1e-9)))
+
+
+def wilson_interval(successes: int, n: int, z: float = 1.959964) -> tuple[float, float]:
+    """Wilson score interval for a proportion (default 95%)."""
+    if n <= 0 or not 0 <= successes <= n:
+        raise ValueError("need 0 <= successes <= n and n > 0")
+    p = successes / n
+    denom = 1 + z * z / n
+    centre = p + z * z / (2 * n)
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))
+    return (centre - half) / denom, (centre + half) / denom
+
+
+def welch_t(first, second) -> dict:
+    """Unpaired Welch t-test (unequal variances), two-sided; the degrees of freedom are rounded for the p-value."""
+    a, b = list(first), list(second)
+    na, nb = len(a), len(b)
+    va, vb = sample_sd(a) ** 2 / na, sample_sd(b) ** 2 / nb
+    t = (mean(a) - mean(b)) / math.sqrt(va + vb)
+    df = (va + vb) ** 2 / (va ** 2 / (na - 1) + vb ** 2 / (nb - 1))
+    return {"t": t, "df": df, "p_two_sided": t_two_sided_p(t, max(1, round(df))), "n_first": na, "n_second": nb}

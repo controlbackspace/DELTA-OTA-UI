@@ -45,6 +45,14 @@ def _pct(n: int, budget: int) -> str:
 
 
 # ------------------------------------------------------------------ hardware
+def esptool_cmd(pio: str, port: str, *args: str) -> list[str]:
+    """esptool.py through PlatformIO's own interpreter, found next to the given pio executable (as flash_device.bat does)."""
+    penv = Path(pio).parent
+    py = penv / ("python.exe" if os.name == "nt" else "python")
+    esptool = penv.parent.parent / "packages" / "tool-esptoolpy" / "esptool.py"
+    return [str(py), str(esptool), "--chip", "esp32", "--port", port, *args]
+
+
 def hw_session(ctx: RunContext, project: Path, pio: str, port: str, build_flags: str, seconds: int,
                run=subprocess.run, capture_cls=SerialCapture) -> dict:
     """Flash web3_baseline, capture it, and always restore the factory updater.
@@ -62,6 +70,14 @@ def hw_session(ctx: RunContext, project: Path, pio: str, port: str, build_flags:
         (raw / "pio-upload-web3_baseline.log").write_text((up.stdout or "") + (up.stderr or ""), encoding="utf-8")
         if up.returncode != 0:
             raise RuntimeError("upload of web3_baseline failed - see raw/pio-upload-web3_baseline.log")
+        # `pio run -t upload` also writes boot_app0, which selects ota_0: on a board that holds an application the
+        # bootloader would keep starting that application and never the baseline. Erase otadata so the factory slot
+        # (where the baseline was written) boots, exactly as toolslash_device.bat does after a factory upload.
+        er = run(esptool_cmd(pio, port, "erase_region", "0xd000", "0x2000"), cwd=project, env=env,
+                 capture_output=True, text=True, timeout=120)
+        (raw / "erase-otadata-after-upload.log").write_text((er.stdout or "") + (er.stderr or ""), encoding="utf-8")
+        if er.returncode != 0:
+            raise RuntimeError("erasing otadata failed - see raw/erase-otadata-after-upload.log")
         cap = capture_cls(port, log_path=raw / "serial-web3_baseline.log").open()
         try:
             cap.reset_board()

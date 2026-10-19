@@ -103,5 +103,56 @@ class SuccessRunTests(unittest.TestCase):
             inf.success_run_trials(0.95, 1.0)
 
 
+
+class SupportingStatisticsTests(unittest.TestCase):
+    def test_paired_ci_uses_the_t_critical_value(self):
+        ci = inf.paired_ci95(A, B)
+        self.assertAlmostEqual(ci["t_critical"], 2.2621571627, places=5)         # t(0.975, 9)
+        self.assertAlmostEqual(ci["low"], REF_MEAN_D - 2.2621571627 * REF_SD_D / math.sqrt(10), places=5)
+        self.assertAlmostEqual(ci["high"], REF_MEAN_D + 2.2621571627 * REF_SD_D / math.sqrt(10), places=5)
+
+    def test_effect_size_dz(self):
+        self.assertAlmostEqual(inf.effect_size_dz(A, B), REF_MEAN_D / REF_SD_D, places=9)
+        with self.assertRaises(ValueError):
+            inf.effect_size_dz([3, 4, 5], [1, 2, 3])                               # identical differences
+
+    def test_sign_test(self):
+        r = inf.sign_test_p([1.0] * 60, [2.0] * 60)
+        self.assertEqual((r["n"], r["first_lower"]), (60, 60))
+        self.assertAlmostEqual(r["p_two_sided"], 2 / 2 ** 60, places=25)
+        self.assertEqual(inf.sign_test_p([1, 2, 3, 4], [2, 1, 4, 3])["p_two_sided"], 1.0)
+        self.assertEqual(inf.sign_test_p([1, 5], [1, 4])["n"], 1)                  # the tie is dropped
+        with self.assertRaises(ValueError):
+            inf.sign_test_p([1, 2], [1, 2])
+
+    def test_pearson_and_slope(self):
+        self.assertAlmostEqual(inf.pearson_r([1, 2, 3, 4], [2, 4, 6, 8]), 1.0)
+        self.assertAlmostEqual(inf.pearson_r([1, 2, 3, 4], [8, 6, 4, 2]), -1.0)
+        self.assertAlmostEqual(inf.linear_slope([1, 2, 3, 4], [2, 4, 6, 8]), 2.0)
+        with self.assertRaises(ValueError):
+            inf.pearson_r([1, 1, 1], [1, 2, 3])
+
+    def test_fisher_exact_matches_the_campaign_counts(self):
+        self.assertAlmostEqual(inf.fisher_exact_two_sided(4, 69, 5, 69), 1.0, places=9)
+        self.assertAlmostEqual(inf.fisher_exact_two_sided(4, 69, 0, 69), 0.11954582319545823, places=12)
+        self.assertAlmostEqual(inf.fisher_exact_two_sided(0, 10, 0, 10), 1.0)
+
+    def test_wilson_interval(self):
+        lo, hi = inf.wilson_interval(65, 69)
+        self.assertAlmostEqual(lo, 0.8602, places=3)
+        self.assertAlmostEqual(hi, 0.9772, places=3)
+        lo, hi = inf.wilson_interval(0, 30)
+        self.assertEqual(lo, 0.0 if abs(lo) < 1e-12 else lo)
+        self.assertLess(hi, 0.12)
+        with self.assertRaises(ValueError):
+            inf.wilson_interval(5, 4)
+
+    def test_welch_t(self):
+        r = inf.welch_t([1, 2, 3], [4, 5, 6])
+        self.assertAlmostEqual(r["t"], -3.6742346, places=5)
+        self.assertAlmostEqual(r["df"], 4.0, places=9)
+        self.assertAlmostEqual(r["p_two_sided"], 0.0213, places=3)
+
+
 if __name__ == "__main__":
     unittest.main()

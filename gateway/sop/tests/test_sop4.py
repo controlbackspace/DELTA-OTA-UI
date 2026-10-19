@@ -94,9 +94,11 @@ class HwSessionTests(unittest.TestCase):
         out = sop4.hw_session(self.ctx, self.project, "pio", "COM7", '-DWEB3_RPC_HOST=\\"h\\"', 30, run=rec, capture_cls=FakeCapture)
         cmds = [" ".join(map(str, c)) for c, _ in rec.calls]
         self.assertIn("run -e web3_baseline -t upload --upload-port COM7", cmds[0])
-        self.assertIn("flash_device.bat factory COM7", cmds[1])
+        self.assertIn("erase_region 0xd000 0x2000", cmds[1])         # after the upload, so the factory slot boots
+        self.assertIn("--port COM7", cmds[1])
+        self.assertIn("flash_device.bat factory COM7", cmds[2])
         self.assertEqual(rec.calls[0][1]["env"]["PLATFORMIO_BUILD_FLAGS"], '-DWEB3_RPC_HOST=\\"h\\"')
-        self.assertEqual(rec.calls[1][1]["env"]["NOPAUSE"], "1")
+        self.assertEqual(rec.calls[2][1]["env"]["NOPAUSE"], "1")
         self.assertTrue(out["restored"])
         self.assertEqual(len(out["parsed"]["web3"]), 2)
 
@@ -111,7 +113,26 @@ class HwSessionTests(unittest.TestCase):
         rec = RunnerRecorder(fail_upload=True)
         with self.assertRaises(RuntimeError):
             sop4.hw_session(self.ctx, self.project, "pio", "COM7", "", 30, run=rec, capture_cls=FakeCapture)
-        self.assertEqual(len(rec.calls), 2)                       # upload attempted, then restore
+        self.assertEqual(len(rec.calls), 2)                       # upload attempted, then restore (no otadata erase)
+        self.assertNotIn("erase_region", " ".join(map(str, rec.calls[0][0])) + " ".join(map(str, rec.calls[1][0])))
+
+    def test_a_failed_otadata_erase_stops_the_run_but_still_restores(self):
+        def run(cmd, **kw):
+            return SimpleNamespace(returncode=1 if "erase_region" in " ".join(map(str, cmd)) else 0, stdout="", stderr="")
+        calls = []
+        def rec(cmd, **kw):
+            calls.append(" ".join(map(str, cmd)))
+            return run(cmd, **kw)
+        with self.assertRaises(RuntimeError) as cm:
+            sop4.hw_session(self.ctx, self.project, "pio", "COM7", "", 30, run=rec, capture_cls=FakeCapture)
+        self.assertIn("otadata", str(cm.exception))
+        self.assertIn("flash_device.bat factory COM7", calls[-1])
+
+    def test_esptool_command_is_built_next_to_platformio(self):
+        cmd = sop4.esptool_cmd(str(Path("C:/u/.platformio/penv/Scripts/pio.exe")), "COM3", "erase_region", "0xd000", "0x2000")
+        self.assertTrue(cmd[0].endswith("python.exe") or cmd[0].endswith("python"))
+        self.assertTrue(cmd[1].replace("\\", "/").endswith(".platformio/packages/tool-esptoolpy/esptool.py"))
+        self.assertEqual(cmd[2:], ["--chip", "esp32", "--port", "COM3", "erase_region", "0xd000", "0x2000"])
 
     def test_a_restore_that_raises_does_not_mask_the_original_error(self):
         def run(cmd, **kw):

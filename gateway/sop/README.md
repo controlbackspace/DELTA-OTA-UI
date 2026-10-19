@@ -110,3 +110,16 @@ Gateway telemetry (`gateway_runtime/metrics.py`) is off unless `DELTA_METRICS=1`
 `gateway_metrics.json`. Definitions: polling = mean contract-read time since the previous release; SHA-256 and AES-CCM are
 timed with `pyperf`'s clock and the garbage collector off; peak RAM and CPU are `psutil` samples (50 ms) from detection to staging,
 CPU as a share of total capacity.
+
+## Chapter 4 data pack and SOP 4 hardware measurement
+| Module | What it does | Command (from `gateway\`) |
+|---|---|---|
+| `chapter4.py` | Regenerates every Chapter 4 statistic from the recorded runs: `STATISTICS.md`, tidy CSVs in `data/`, SHA-256 manifest | `python -m sop.chapter4 --ab <campaign-AB> --t3 <campaign-T3> --cde <trials.csv> --web3 <on-device-web3> --out <experiment-paper-tables> --sop4 <sop4-supporting-data>` |
+| `table_docs.py` | Writes `TABLES-1-AND-4.md` and `TABLES-2-AND-3.md` (approved tables from `thesis_tables.py` plus how-to-read notes and provenance) and refreshes the Appendix of the chapter draft | add `--tables` (and `--draft <CHAPTERS-4-AND-5-DRAFT.md>`) to the `chapter4` command |
+| `figures.py` | Five PNG figures from the same data (needs matplotlib; the gateway venv does not have it) | `python -m sop.figures --ab ... --t3 ... --cde ... --web3 ... --out <experiment-paper-tables>` |
+| `web3_hw.py` | SOP 4 hardware part: 60 on-device Web3 ledger checks (local chain, TLS front, flash, capture, restore) | `python -m sop.web3_hw --serial COM3 --lan-ip <PC> --runs 60 --allow-flash` |
+
+Table 2 cycle n is the n-th complete A/B pair (both scenarios `ok` for the same trial), the first 60 pairs. A metric missing in one cycle drops that pair
+for that metric only. `inference.py` also holds the supporting tests used in the discussion (sign test, Pearson r, Fisher exact, Wilson interval, Welch t).
+`sop4.hw_session` erases `otadata` after `pio run -t upload` (the upload also selects `ota_0`, so the baseline would never boot on a board holding an application).
+Put the board back in demonstration state afterwards with `tools\flash_device.bat reset COMx` in the firmware repo.
