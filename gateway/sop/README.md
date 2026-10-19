@@ -89,7 +89,7 @@ The approved Experiment Paper (Tables 1 to 4) is filled from recorded data only;
 | Table | Filled by | Command (from `gateway\`) |
 |---|---|---|
 | 1 Volumetric payload | one static benchmark | `thesis_tables.table1(...)` (done) |
-| 2 Hardware and network | Scenarios A and B, ESP32 + this PC as gateway | `python -m sop.device_cycle --serial COM3 --lan-ip 192.168.100.94 --scenarios A,B` |
+| 2 Hardware and network | Scenarios A and B, ESP32 + this PC as gateway | `python -m sop.device_cycle --serial COM3 --lan-ip 192.168.100.94 --scenarios A,B --static-ram-bytes <SOP 4 figure>` |
 | 3 Gateway profiling | gateway-only cycles on the Raspberry Pi | `python -m sop.device_cycle --table3 --gateway-url http://<pi>:8000 --lan-ip 192.168.100.94` |
 | 4 Deterministic validation | Scenarios C, D, E, no device | `python -m sop.host_scenarios --trials 60` (done) |
 

@@ -491,7 +491,8 @@ def main(argv=None) -> int:
     ap.add_argument("--firmware-dir")
     ap.add_argument("--table3", action="store_true", help="gateway-only profiling cycles against a gateway on the Pi")
     ap.add_argument("--gateway-url", help="Table 3: the Pi's artifact server, e.g. http://192.168.100.50:8000")
-    ap.add_argument("--static-ram-bytes", type=int, default=29400, help="Table 2 RAM column: updater static RAM increment (SOP 4)")
+    ap.add_argument("--static-ram-bytes", type=int,
+                    help="Table 2 RAM column: the updater's static RAM increment from the SOP 4 report of the exact firmware flashed")
     ap.add_argument("--seed", type=int, default=20261015)
     ap.add_argument("--dry-run", action="store_true", help="print the plan and touch nothing")
     args = ap.parse_args(argv)
@@ -507,10 +508,12 @@ def main(argv=None) -> int:
         ap.error("--table3 needs --gateway-url")
     if not args.table3 and not args.serial:
         ap.error("--serial is required for Scenarios A and B")
+    if not args.table3 and args.static_ram_bytes is None:
+        ap.error("--static-ram-bytes is required for Scenarios A and B (take it from the SOP 4 report of the flashed firmware)")
     ctx = RunContext(Path(args.run)) if args.run else RunContext.new()
     store = TrialStore(ctx.dir / "campaign" / ("table3.csv" if args.table3 else "trials.csv"))
     git = ctx.meta.get("git_commit", "")
-    ram = static_ram_kb(args.static_ram_bytes)
+    ram = static_ram_kb(args.static_ram_bytes) if args.static_ram_bytes is not None else None
     rig = (GatewayRig(ctx, gateway_url=args.gateway_url, lan_ip=args.lan_ip, firmware_dir=args.firmware_dir) if args.table3
            else LocalRig(ctx, serial_port=args.serial, lan_ip=args.lan_ip, iface=args.iface, firmware_dir=args.firmware_dir))
     with rig:
