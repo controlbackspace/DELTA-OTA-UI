@@ -241,7 +241,7 @@ def main(argv=None) -> int:
     ap.add_argument("--firmware-dir")
     ap.add_argument("--hardhat-port", type=int, default=18545)
     args = ap.parse_args(argv)
-    ctx = RunContext(Path(args.run)) if args.run else RunContext.new()
+    ctx = RunContext(Path(args.run).resolve()) if args.run else RunContext.new()
     store = TrialStore(ctx.dir / "campaign" / "trials.csv")
     run_host(ctx, store, tuple(args.scenarios.split(",")), args.trials, firmware_dir=args.firmware_dir,
              hardhat_port=args.hardhat_port)

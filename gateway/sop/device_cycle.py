@@ -193,6 +193,8 @@ def run_cycle(rig, slot: Slot, static_ram: float | None, with_device: bool = Tru
         row["status"], row["note"] = (("ok", "gateway profiled") if gw else ("invalid", "no telemetry record for this release"))
         return row
     try:
+        if hasattr(rig, "set_label"):
+            rig.set_label(f"{slot.scenario}-{'w' if slot.warmup else 'c'}{slot.trial:03d}")
         rig.capture_start()
         log_text = rig.run_update(UPDATE_TIMEOUT_S.get(slot.scenario, 240))
         capture_text = rig.capture_stop()
@@ -256,7 +258,7 @@ class _BaseRig:
         self.ctx, self.lan_ip, self.say, self.hardhat_port = ctx, lan_ip, say, hardhat_port
         self.base, self.target = pair
         self.project = self.base.parents[1]
-        self.work = ctx.sub("work_cycles")
+        self.work = Path(ctx.sub("work_cycles")).resolve()          # the gateway needs absolute paths
         self.artifacts = self.work / "artifacts"
         self.artifacts.mkdir(parents=True, exist_ok=True)
         self.node = self.chain = None
@@ -303,8 +305,16 @@ class LocalRig(_BaseRig):
         self._full_reset = False
         self.gw = self.ser = None
         self._tshark = self._pcap = None
+        self._label, self._stamp = "cycle", 0
 
     def __enter__(self):
+        try:
+            return self._enter()
+        except BaseException:
+            self.__exit__(None, None, None)              # a failed start must not leave the node or gateway running
+            raise
+
+    def _enter(self):
         from .gateway_proc import GatewayProc
         from .serial_capture import SerialCapture
         raw = self.ctx.sub("raw")
@@ -357,7 +367,11 @@ class LocalRig(_BaseRig):
         return {"ok": bool(ok), "blocks": st.get("blocks_total"),
                 "stage_ms": ((st.get("staged_at", 0) - self._t_sent) * 1000.0) if ok else None}
 
+    def set_label(self, label: str) -> None:
+        self._label = label
+
     def capture_start(self) -> None:
+        self._stamp = int(time.time())
         self._pcap = self.work / "cycle.pcap"
         self._pcap.unlink(missing_ok=True)
         self._tshark = subprocess.Popen([str(TSHARK), "-i", self.iface, "-f", "udp port 5683", "-w", str(self._pcap)],
@@ -365,6 +379,7 @@ class LocalRig(_BaseRig):
         time.sleep(2.0)                                            # let the capture attach before the device speaks
 
     def run_update(self, timeout: float) -> str:
+        self.ser.log_path = self.ctx.sub("raw") / f"cycle-{self._label}-{self._stamp}.serial.log"   # raw evidence per cycle
         self.ser.reset_board()
         return self.ser.capture(timeout, until=r"Application: v1\.1")
 
@@ -380,7 +395,7 @@ class LocalRig(_BaseRig):
         for f in TSHARK_FIELDS:
             cmd += ["-e", f]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-        shutil.copy(self._pcap, self.ctx.sub("raw") / f"cycle-{int(time.time())}.pcap")
+        shutil.copy(self._pcap, self.ctx.sub("raw") / f"cycle-{self._label}-{self._stamp}.pcap")
         return r.stdout
 
     def gateway_record(self) -> dict | None:
@@ -419,6 +434,13 @@ class GatewayRig(_BaseRig):
             return {}
 
     def __enter__(self):
+        try:
+            return self._enter()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
+
+    def _enter(self):
         import serve_artifacts
         self._start_chain("0.0.0.0")                                # the Pi must reach the node
         os.environ["DELTA_ARTIFACT_DIR"] = str(self.artifacts)
@@ -510,7 +532,7 @@ def main(argv=None) -> int:
         ap.error("--serial is required for Scenarios A and B")
     if not args.table3 and args.static_ram_bytes is None:
         ap.error("--static-ram-bytes is required for Scenarios A and B (take it from the SOP 4 report of the flashed firmware)")
-    ctx = RunContext(Path(args.run)) if args.run else RunContext.new()
+    ctx = RunContext(Path(args.run).resolve()) if args.run else RunContext.new()
     store = TrialStore(ctx.dir / "campaign" / ("table3.csv" if args.table3 else "trials.csv"))
     git = ctx.meta.get("git_commit", "")
     ram = static_ram_kb(args.static_ram_bytes) if args.static_ram_bytes is not None else None
