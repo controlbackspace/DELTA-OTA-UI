@@ -114,9 +114,9 @@ CPU as a share of total capacity.
 ## Chapter 4 data pack and SOP 4 hardware measurement
 | Module | What it does | Command (from `gateway\`) |
 |---|---|---|
-| `chapter4.py` | Regenerates every Chapter 4 statistic from the recorded runs: `STATISTICS.md`, tidy CSVs in `data/`, SHA-256 manifest | `python -m sop.chapter4 --ab <campaign-AB> --t3 <campaign-T3> --cde <trials.csv> --web3 <on-device-web3> --out <experiment-paper-tables> --sop4 <sop4-supporting-data>` |
+| `chapter4.py` | Regenerates every Chapter 4 statistic from the recorded runs: the statistical analysis, tidy CSVs, SHA-256 manifest | `python -m sop.chapter4 --ab <campaign-AB> --t3 <campaign-T3> --cde <trials.csv> --web3 <on-device-web3> --out <experiment-paper-tables> --sop4 <sop4-supporting-data>` |
 | `table_docs.py` | Writes `TABLES-1-AND-4.md` and `TABLES-2-AND-3.md` (approved tables from `thesis_tables.py` plus how-to-read notes and provenance) and refreshes the Appendix of the chapter draft | add `--tables` (and `--draft <CHAPTERS-4-AND-5-DRAFT.md>`) to the `chapter4` command |
-| `figures.py` | Five PNG figures from the same data (needs matplotlib; the gateway venv does not have it) | `python -m sop.figures --ab ... --t3 ... --cde ... --web3 ... --out <experiment-paper-tables>` |
+| `figures.py` | Seven PNG figures from the same data (needs matplotlib; the gateway venv does not have it) | `python -m sop.figures --ab ... --t3 ... --cde ... --web3 ... --out <experiment-paper-tables>` |
 | `web3_hw.py` | SOP 4 hardware part: 60 on-device Web3 ledger checks (local chain, TLS front, flash, capture, restore) | `python -m sop.web3_hw --serial COM3 --lan-ip <PC> --runs 60 --allow-flash` |
 
 Table 2 cycle n is the n-th complete A/B pair (both scenarios `ok` for the same trial), the first 60 pairs. A metric missing in one cycle drops that pair
@@ -136,3 +136,10 @@ Harness race (found during the N campaign): the updater starts an update by itse
 backup copy and the delta fails (`delta decode error`). `LocalRig` now starts the capture before publishing and does **not** reset a device that has begun
 (`update_interrupted()` in `chapter4.py` detects interrupted cycles in older logs). The firmware side (`https_baseline`, `https_control`, `factory_naked`) is in the firmware
 repository, tag `baselines-fw-1`. The gateway's naked framing is switched by `DELTA_NAKED=1` or a flag file (`DELTA_NAKED_FILE`); it is never set in the product.
+
+## Data pack layout and the `pack` command
+`python -m sop.pack build --root ../sop-results [--draft <CHAPTERS-4-AND-5-DRAFT.md>]` rebuilds, from the runs listed in `01-raw-data/RUNS-INDEX.csv`, the tidy CSVs
+(`01-raw-data/tidy-csv/`), one markdown file per table and the figures (`02-interpretation/`) and the generated writing files (`03-writing/01_statistical-analysis.md`,
+`07_baselines-results.md`), and refreshes the Appendix of the draft. `python -m sop.pack publish --root ../sop-results --dest ../testing-deliverables/thesis-data-pack` copies the
+light parts (no raw runs, no draft) to a tracked folder for the group. Runs are found by ID: R02 Table 4, R03 Table 2, R04 Table 3, R05 SOP 4 Web3, R06 baseline H, R07 baseline N,
+R08 confirmation. Naming rules are in `sop-results/03-writing/00_START-HERE.md` (section 5).

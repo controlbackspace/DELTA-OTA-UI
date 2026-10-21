@@ -1,6 +1,6 @@
 """Figures for Chapter 4, drawn from the same recorded data as STATISTICS.md.
 
-    python -m sop.figures --ab <campaign-AB> --t3 <campaign-T3> --cde <trials.csv> --web3 <on-device-web3> --out <experiment-paper-tables>
+    python -m sop.figures --ab <campaign-AB> --t3 <campaign-T3> --cde <trials.csv> --web3 <R05 run folder> --out <folder>   (or `python -m sop.pack build`)
 
 matplotlib is the only third-party package and is optional for the rest of the toolkit (the gateway virtual environment
 does not have it); run this module with a Python that has it. Five PNG files are written to <out>/figures.

@@ -1,4 +1,4 @@
-"""Analysis of the two Chapter 3 comparators measured on the same board (see experiment-paper-tables/BASELINES-SPEC.md).
+"""Analysis of the two Chapter 3 comparators measured on the same board (see 03-writing/06_baselines-spec.md in the data pack).
 
   H  the full v1.1 image over HTTPS (Chapter 3 Baseline A): Equation 3 (payload) and Equation 4 (RAM) against the proposed architecture
   N  the same delta over naked CoAP, no AES-CCM (Chapter 3 Baseline B): the Absolute Difference ("security tax"), A minus N, paired

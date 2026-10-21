@@ -2,7 +2,7 @@
 
     python -m sop.https_hw --serial COM3 --lan-ip 192.168.100.94 --iface 6 [--runs 63] [--out <folder>] --allow-flash
 
-What it does (see experiment-paper-tables/BASELINES-SPEC.md):
+What it does (see 03-writing/06_baselines-spec.md in the data pack):
 
 1. serves the unmodified `app-v1.1.bin` over HTTPS (TLS 1.2, self-signed ECDSA P-256 certificate, port 8545) on this PC;
 2. captures the LAN traffic of that port with tshark;

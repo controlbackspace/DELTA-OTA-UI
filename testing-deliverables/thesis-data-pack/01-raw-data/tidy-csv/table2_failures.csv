@@ -1,0 +1,10 @@
+scenario,trial,cause,reconstructed,interrupted,note
+A,7,flash write failed,False,True,attempt 1: the device reported: update to v1.1 failed: delta decode error (161 s)
+B,11,transfer stalled,False,True,attempt 1: the device reported: update to v1.1 failed: transfer stalled (281 s)
+A,15,flash write failed,False,True,attempt 1: the device reported: update to v1.1 failed: delta decode error (161 s)
+B,21,bad DOTA header,False,False,attempt 1: the device reported: update to VWMvmPUEs failed: delta decode error (282 s)
+A,34,flash write failed,False,True,attempt 1: the device reported: update to v1.1 failed: delta decode error (161 s)
+B,43,bad DOTA header,False,False,attempt 1: the device reported: update to hrNw failed: delta decode error (282 s)
+B,52,transfer stalled,False,True,attempt 1: the device reported: update to v1.1 failed: transfer stalled (283 s)
+A,62,flash write failed,False,True,attempt 1: the device reported: update to v1.1 failed: delta decode error (161 s)
+B,66,transfer stalled,False,False,attempt 1: the device reported: update to v1.1 failed: transfer stalled (282 s)

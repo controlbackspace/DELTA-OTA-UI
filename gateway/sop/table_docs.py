@@ -15,6 +15,7 @@ import re
 from pathlib import Path
 
 from . import campaign, chapter4 as c4, thesis_tables as tt
+from .chapter4 import short_path
 
 PI_EVIDENCE = ("Raspberry Pi 4 Model B limited to Raspberry Pi 3B+ memory and clock: `free -m` 905 MB total (1 GB cap, `total_mem=1024`), "
                "`arm_freq=1400` (measured 1,400,361,344 Hz), 4 cores, swap enabled (904 MB); recorded on the Pi on 2026-10-19 "
@@ -28,7 +29,8 @@ def _sha(path_or_bytes) -> str:
 
 # ------------------------------------------------------------------------------------------- Tables 1 and 4
 def table1_and_4_doc(*, base: Path, target: Path, patch: bytes, cde_csv: Path, cde_rows: list[dict], head: str,
-                     bsdiff_version: str | None = None, run_folder: str = "sop-results/experiment-paper-tables/scenarios-C-D-E/") -> str:
+                     bsdiff_version: str | None = None, run_folder: str | None = None) -> str:
+    run_folder = run_folder or str(Path(cde_csv).resolve().parents[1])
     base_b, target_b = Path(base).read_bytes(), Path(target).read_bytes()
     saved = len(target_b) - len(patch)
     revs = sorted({r["git_revision"] for r in cde_rows if r.get("git_revision")})
@@ -57,8 +59,8 @@ The bytes on the wire measured in Scenarios A and B (86.13% fewer) are reported 
 
 | Input | Path and size | SHA-256 |
 |---|---|---|
-| Base image (v1.0) | `{base}` ({len(base_b):,} B) | `{_sha(base_b)}` |
-| Target image (v1.1) | `{target}` ({len(target_b):,} B) | `{_sha(target_b)}` |
+| Base image (v1.0) | `release-images/{Path(base).name}` in the firmware repository ({len(base_b):,} B) | `{_sha(base_b)}` |
+| Target image (v1.1) | `release-images/{Path(target).name}` in the firmware repository ({len(target_b):,} B) | `{_sha(target_b)}` |
 | bsdiff4 patch | {len(patch):,} B (bsdiff4 {bsdiff_version}) | `{_sha(patch)}` |
 
 ---
@@ -79,11 +81,11 @@ it does not prove the failure probability is zero. 59 failure-free cycles are th
 
 | Item | Value |
 |---|---|
-| Run folder | `{run_folder}` |
-| Per-trial data | `scenarios-C-D-E/campaign/trials.csv` ({len(cde_rows)} rows: C {n_by['C']}, D {n_by['D']}, E {n_by['E']}; {invalid} invalid) |
+| Run folder | `{short_path(run_folder)}` |
+| Per-trial data | `campaign/trials.csv` in the run folder ({len(cde_rows)} rows: C {n_by['C']}, D {n_by['D']}, E {n_by['E']}; {invalid} invalid) |
 | `trials.csv` SHA-256 | `{_sha(cde_csv)}` |
-| Gateway system logs | `scenarios-C-D-E/raw/campaign-c-gateway.log`, `campaign-d-gateway.log`, `campaign-e-gateway.log` |
-| Blockchain transaction logs | `scenarios-C-D-E/raw/campaign-c-node.log`, `campaign-d-node.log`, `campaign-e-node.log` |
+| Gateway system logs | `raw/campaign-c-gateway.log`, `campaign-d-gateway.log`, `campaign-e-gateway.log` in the run folder |
+| Blockchain transaction logs | `raw/campaign-c-node.log`, `campaign-d-node.log`, `campaign-e-node.log` in the run folder |
 | Software revision | run recorded `{', '.join(revs) or 'n/a'}`; tables rendered at `{head}` |
 | Patch used in C, D and E | the real v1.0 to v1.1 patch above, SHA-256 `{_sha(patch)[:16]}...` |
 | Do not | save `trials.csv` from a spreadsheet program: it rewrites the boolean spelling (the analysis tolerates it, but keep the original) |
@@ -140,7 +142,7 @@ Tables 1 and 4 are in `TABLES-1-AND-4.md`. Statistics behind these tables: `STAT
 {table2}
 
 ### Table 2 provenance
-- Campaign data: `{ab_csv}` (sha256 `{_sha(ab_csv)}`)
+- Campaign data: `{short_path(ab_csv)}` (sha256 `{_sha(ab_csv)}`)
 - Counted attempts: A ok {status['A']['ok']}, failed {status['A']['failed']}; B ok {status['B']['ok']}, failed {status['B']['failed']}; harness-invalid cycles re-run (no update started): A {status['A']['invalid']}, B {status['B']['invalid']}.
 - Firmware: factory image `campaign-fw-1` (firmware repo commit 7131621). Controller revisions recorded: {", ".join(revs) or 'n/a'}. Table code revision: {head}.
 - Failed cycles (kept in the raw CSV, listed in `data/failures.csv`): {"; ".join(f"{d['scenario']} trial {d['trial']}: {d['cause']}" for d in fails)}.
@@ -155,7 +157,7 @@ Tables 1 and 4 are in `TABLES-1-AND-4.md`. Statistics behind these tables: `STAT
 {table3}
 
 ### Table 3 provenance
-- Campaign data: `{t3_csv}` (sha256 `{_sha(t3_csv)}`), 3 warm-up + {len(t3n)} counted cycles, all ok.
+- Campaign data: `{short_path(t3_csv)}` (sha256 `{_sha(t3_csv)}`), 3 warm-up + {len(t3n)} counted cycles, all ok.
 - {sup_text + "was run twice: the first run had a stalled contract read (an RPC call to the chain on the PC) and is marked superseded in the CSV; the table shows the re-run. The original row is kept in `table3.csv` and in `table3.before-cycle6-rerun.csv`." if superseded else "No cycle was superseded."}
 - Median polling latency {median:.1f} ms; maximum {poll[-1]:.1f} ms.
 - The Pi clock was about 200 s ahead of the PC; only the derived time-to-stage column (not part of the table) is affected.
@@ -197,7 +199,7 @@ Layouts, headings and markers are those of the approved Experiment Paper; only t
 
 {src4}
 
-*Source files:* Table 1 and Table 4 from `experiment-paper-tables/TABLES-1-AND-4.md`; Tables 2 and 3 from `experiment-paper-tables/TABLES-2-AND-3.md` (under `sop-results/`), generated from the campaign CSV files recorded with their SHA-256 hashes.
+*Source files:* each table in `02-interpretation/tables/` (`table-1` to `table-4`), generated from the run CSV files recorded with their SHA-256 hashes (see `01-raw-data/RUNS-INDEX.csv`).
 """
 
 
@@ -213,8 +215,8 @@ def replace_appendix(draft: str, appendix: str) -> str:
 
 
 # ------------------------------------------------------------------------------------------- Supplementary baselines (H and N)
-def baselines_doc(*, ctx: dict, n_csv: Path | None, h_dir: Path | None, head: str) -> str:
-    """BASELINES.md: Supplementary Table S2 and the results for the Chapter 3 comparators, with provenance."""
+def baselines_parts(*, ctx: dict, n_csv: Path | None, h_dir: Path | None, head: str) -> dict:
+    """The pieces of the baselines documents: intro, Supplementary Table S2, the analysis text and the provenance."""
     from . import baselines
 
     n, h = ctx.get("n"), ctx.get("h")
@@ -225,25 +227,31 @@ def baselines_doc(*, ctx: dict, n_csv: Path | None, h_dir: Path | None, head: st
         table = tt.table2s(n["pairs"], counted, (hdata["summary"].get("heap") or {}).get("peak_bytes"))
     prov = []
     if n_csv:
-        prov.append(f"- N campaign (A and N, interleaved): `{n_csv}` (sha256 `{_sha(n_csv)}`)")
+        prov.append(f"- N campaign (A and N, interleaved): `{short_path(n_csv)}` (sha256 `{_sha(n_csv)}`)")
     if h_dir:
-        prov.append(f"- H run: `{Path(h_dir) / 'campaign' / 'https_runs.csv'}` (sha256 `{_sha(Path(h_dir) / 'campaign' / 'https_runs.csv')}`), "
+        prov.append(f"- H run: `{short_path(Path(h_dir) / 'campaign' / 'https_runs.csv')}` (sha256 `{_sha(Path(h_dir) / 'campaign' / 'https_runs.csv')}`), "
                     f"`summary.json`, `static_increments.json`")
     prov.append(f"- Firmware: separate PlatformIO environments `https_baseline`, `https_control` and `factory_naked` of the firmware repository; the standard "
                 f"`factory` environment is unchanged in code (its image differs from the original in the 64 bytes derived from the ELF checksum only).")
     prov.append(f"- Table code revision: {head}.")
     nl = chr(10)
-    return f"""# Chapter 3 comparators on the same board: HTTPS full binary (H) and naked CoAP delta (N)
+    intro = ("Generated from recorded data (`python -m sop.pack build`). Specification: `BASELINES-SPEC.md`." + nl +
+             "**Supplementary**: the approved Tables 1 to 4 are not changed. H and N exist because Chapter 3's statistical treatment names a standard HTTPS full-binary update "
+             "(Equations 3 and 4) and an unsecured naked CoAP transfer (the Absolute Difference). They share the setup of Scenarios A and B (same ESP32, Wi-Fi, gateway PC, "
+             "firmware pair, tshark and serial measurement) but are separate conditions, not one architecture.")
+    analysis = baselines.render(n, h).replace('## 10. ', '## ').replace('### 10.', '### ')
+    return {"intro": intro, "table": table, "analysis": analysis, "provenance": "## Provenance" + nl + nl.join(prov)}
 
-Generated from recorded data (`python -m sop.chapter4 --n <N campaign> --h <H run> --tables`). Specification: `BASELINES-SPEC.md`.
-**Supplementary**: the approved Tables 1 to 4 are not changed. H and N exist because Chapter 3's statistical treatment names a standard HTTPS full-binary update
-(Equations 3 and 4) and an unsecured naked CoAP transfer (the Absolute Difference). They share the setup of Scenarios A and B (same ESP32, Wi-Fi, gateway PC,
-firmware pair, tshark and serial measurement) but are separate conditions, not one architecture.
 
-{table}
+def baselines_results_doc(parts: dict) -> str:
+    """03-writing/07_baselines-results.md: the analysis text of the two comparators (the table has its own document)."""
+    nl = chr(10)
+    return ("# Chapter 3 comparators on the same board: results (HTTPS full binary H, naked CoAP delta N)" + nl + nl + parts["intro"] + nl + nl +
+            "Supplementary Table S2 is in `02-interpretation/tables/table-s2_baselines-h-n.md`." + nl + nl + parts["analysis"].strip() + nl + nl + parts["provenance"] + nl)
 
-{baselines.render(n, h).replace('## 10. ', '## ').replace('### 10.', '### ')}
 
-## Provenance
-{nl.join(prov)}
-"""
+def baselines_doc(*, ctx: dict, n_csv: Path | None, h_dir: Path | None, head: str) -> str:
+    """BASELINES.md (single document): Supplementary Table S2, the results for the Chapter 3 comparators, and the provenance."""
+    p = baselines_parts(ctx=ctx, n_csv=n_csv, h_dir=h_dir, head=head)
+    nl = chr(10)
+    return "# Chapter 3 comparators on the same board: HTTPS full binary (H) and naked CoAP delta (N)" + nl + nl + p["intro"] + nl + nl + p["table"] + nl + nl + p["analysis"] + nl + p["provenance"] + nl

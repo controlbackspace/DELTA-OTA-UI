@@ -1,0 +1,16 @@
+old_path,new_path,run_id
+20261004T004135Z,01-raw-data/runs/R01_sop-evidence-report_2026-10-04,R01
+experiment-paper-tables/scenarios-C-D-E,01-raw-data/runs/R02_table4_scenarios-C-D-E_2026-10-15,R02
+campaign-AB-full-20261019T025653Z,01-raw-data/runs/R03_table2_A-vs-B-main_2026-10-19,R03
+campaign-T3-full-20261019T080000Z,01-raw-data/runs/R04_table3_pi-gateway_2026-10-19,R04
+sop4-supporting-data/on-device-web3,01-raw-data/runs/R05_sop4_web3-client-on-device_2026-10-19,R05
+baselines-H-full,01-raw-data/runs/R06_baseline-H_https-full-binary_2026-10-21,R06
+baselines-N-full,01-raw-data/runs/R07_baseline-N_naked-coap-delta_2026-10-21,R07
+confirm-AB-fixed-harness,01-raw-data/runs/R08_confirmation_A-vs-B-fixed-harness_2026-10-21,R08
+pilot-AB-20261019T022551Z,01-raw-data/pilots/P01_table2_A-vs-B-aborted_2026-10-19,P01
+pilot-AB-20261019T022747Z,01-raw-data/pilots/P02_table2_A-vs-B_2026-10-19,P02
+pilot-T3-20261019T075440Z,01-raw-data/pilots/P03_table3_pi-gateway_2026-10-19,P03
+baselines-H-pilot,01-raw-data/pilots/P04_baseline-H_https_2026-10-21,P04
+baselines-N-pilot,01-raw-data/pilots/P05_baseline-N_naked-coap-delta_2026-10-21,P05
+sop4-supporting-data/discarded-attempts/sop4-hw-web3-20261019T092114Z,01-raw-data/discarded/D01_sop4_web3-board-booted-old-app_2026-10-19,D01
+sop4-supporting-data/discarded-attempts/sop4-hw-web3-20261019T093212Z,01-raw-data/discarded/D02_sop4_web3-otadata-erased-too-early_2026-10-19,D02
