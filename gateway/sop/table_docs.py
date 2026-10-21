@@ -210,3 +210,40 @@ def replace_appendix(draft: str, appendix: str) -> str:
     if head.endswith("---"):
         head = head[:-3].rstrip("\n")
     return head + "\n\n---\n\n" + appendix
+
+
+# ------------------------------------------------------------------------------------------- Supplementary baselines (H and N)
+def baselines_doc(*, ctx: dict, n_csv: Path | None, h_dir: Path | None, head: str) -> str:
+    """BASELINES.md: Supplementary Table S2 and the results for the Chapter 3 comparators, with provenance."""
+    from . import baselines
+
+    n, h = ctx.get("n"), ctx.get("h")
+    hdata = ctx.get("h_data")
+    table = ""
+    if n and hdata:
+        counted = [r for r in hdata["rows"] if not campaign.truthy(r["warmup"]) and r["status"] == "ok"]
+        table = tt.table2s(n["pairs"], counted, (hdata["summary"].get("heap") or {}).get("peak_bytes"))
+    prov = []
+    if n_csv:
+        prov.append(f"- N campaign (A and N, interleaved): `{n_csv}` (sha256 `{_sha(n_csv)}`)")
+    if h_dir:
+        prov.append(f"- H run: `{Path(h_dir) / 'campaign' / 'https_runs.csv'}` (sha256 `{_sha(Path(h_dir) / 'campaign' / 'https_runs.csv')}`), "
+                    f"`summary.json`, `static_increments.json`")
+    prov.append(f"- Firmware: separate PlatformIO environments `https_baseline`, `https_control` and `factory_naked` of the firmware repository; the standard "
+                f"`factory` environment is unchanged in code (its image differs from the original in the 64 bytes derived from the ELF checksum only).")
+    prov.append(f"- Table code revision: {head}.")
+    nl = chr(10)
+    return f"""# Chapter 3 comparators on the same board: HTTPS full binary (H) and naked CoAP delta (N)
+
+Generated from recorded data (`python -m sop.chapter4 --n <N campaign> --h <H run> --tables`). Specification: `BASELINES-SPEC.md`.
+**Supplementary**: the approved Tables 1 to 4 are not changed. H and N exist because Chapter 3's statistical treatment names a standard HTTPS full-binary update
+(Equations 3 and 4) and an unsecured naked CoAP transfer (the Absolute Difference). They share the setup of Scenarios A and B (same ESP32, Wi-Fi, gateway PC,
+firmware pair, tshark and serial measurement) but are separate conditions, not one architecture.
+
+{table}
+
+{baselines.render(n, h).replace('## 10. ', '## ').replace('### 10.', '### ')}
+
+## Provenance
+{nl.join(prov)}
+"""

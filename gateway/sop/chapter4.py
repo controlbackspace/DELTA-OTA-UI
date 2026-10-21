@@ -66,12 +66,14 @@ def _num(v):
         return None
 
 
-def select_pairs(rows: list[dict], wanted: int = PAIRS_WANTED) -> list[dict]:
-    """The first `wanted` complete A/B pairs (non-warm-up, both `ok`), as {pair, trial, A, B} in trial order."""
+def select_pairs(rows: list[dict], wanted: int = PAIRS_WANTED, scenarios: tuple[str, str] = ("A", "B")) -> list[dict]:
+    """The first `wanted` complete pairs of two scenarios (non-warm-up, both `ok`), as {pair, trial, <first>, <second>} in trial order.
+    Default A/B (Table 2); ("A", "N") pairs the proposed architecture with the naked-CoAP baseline."""
+    first, second = scenarios
     counted = [r for r in rows if not campaign.truthy(r["warmup"])]
-    ok = {sc: {int(r["trial"]): r for r in counted if r["scenario"] == sc and r["status"] == "ok"} for sc in "AB"}
-    trials = sorted(set(ok["A"]) & set(ok["B"]))[:wanted]
-    return [{"pair": i, "trial": t, "A": ok["A"][t], "B": ok["B"][t]} for i, t in enumerate(trials, 1)]
+    ok = {sc: {int(r["trial"]): r for r in counted if r["scenario"] == sc and r["status"] == "ok"} for sc in scenarios}
+    trials = sorted(set(ok[first]) & set(ok[second]))[:wanted]
+    return [{"pair": i, "trial": t, first: ok[first][t], second: ok[second][t]} for i, t in enumerate(trials, 1)]
 
 
 def column(pairs: list[dict], scenario: str, metric: str) -> list[float]:
@@ -79,19 +81,21 @@ def column(pairs: list[dict], scenario: str, metric: str) -> list[float]:
 
 
 # ----------------------------------------------------------------------------------------------- analyses
-def paired_table(pairs: list[dict]) -> list[dict]:
+def paired_table(pairs: list[dict], first: str = "A", second: str = "B") -> list[dict]:
+    """Per metric: both scenarios' mean/SD/tolerance limit, the reduction (second - first) / second, and the paired test of
+    first - second. Keys are suffixed with the scenario letters (mean_A, mean_B; for the naked baseline mean_A, mean_N)."""
     out = []
     for col, label, digits in AB_METRICS:
-        # only pairs where both cycles have the value, so A and B stay matched (a few cycles lack a heap marker)
-        both = [(_num(p["A"].get(col)), _num(p["B"].get(col))) for p in pairs]
+        # only pairs where both cycles have the value, so the two scenarios stay matched (a few cycles lack a heap marker)
+        both = [(_num(p[first].get(col)), _num(p[second].get(col))) for p in pairs]
         both = [(x, y) for x, y in both if x is not None and y is not None]
         a, b = [x for x, _ in both], [y for _, y in both]
         if len(a) < 2:
             continue
         row = {"metric": col, "label": label, "digits": digits, "n": len(a),
-               "mean_A": inf.mean(a), "sd_A": inf.sample_sd(a), "mean_B": inf.mean(b), "sd_B": inf.sample_sd(b),
+               f"mean_{first}": inf.mean(a), f"sd_{first}": inf.sample_sd(a), f"mean_{second}": inf.mean(b), f"sd_{second}": inf.sample_sd(b),
                "reduction_pct": inf.relative_reduction_pct(inf.mean(b), inf.mean(a)) if inf.mean(b) else None,
-               "utl_A": inf.upper_tolerance_limit(a)["upper_limit"], "utl_B": inf.upper_tolerance_limit(b)["upper_limit"]}
+               f"utl_{first}": inf.upper_tolerance_limit(a)["upper_limit"], f"utl_{second}": inf.upper_tolerance_limit(b)["upper_limit"]}
         t = inf.paired_t_test(a, b)
         row.update({"mean_diff": t["mean_difference"], "sd_diff": t["sd_of_differences"], "degenerate": t["degenerate"],
                     "t": t["t"], "p": t["p_two_sided"]})
@@ -130,6 +134,65 @@ def classify_failure(note: str, serial_text: str) -> str:
     return (note or "unknown").split(":")[-1].strip()[:60] or "unknown"
 
 
+START_MARKERS = ("Update available", "Backing up")
+RESET_MARKER = "POWERON_RESET"
+
+
+def update_interrupted(log_text: str) -> bool:
+    """True when the device had already started its update (it printed `Update available` or began the ota_0 -> ota_1 backup) and a
+    power-on-reset line follows. With the harness of Scenarios A and B that reset is the harness's own EN pulse, so the update was
+    interrupted mid-backup (the delta then has no base and fails with `delta decode error`). A device that started on its own and was
+    left alone (the fixed harness) has no reset line, and a clean start has its marker only after the reset."""
+    lines = log_text.splitlines()
+    start = next((i for i, l in enumerate(lines) if any(m in l for m in START_MARKERS)), None)
+    return start is not None and any(RESET_MARKER in l for l in lines[start + 1:])
+
+
+def cycle_log(raw_dir: Path | None, scenario: str, trial, warmup: bool = False) -> str:
+    if not raw_dir:
+        return ""
+    tag = "w" if warmup else "c"
+    logs = sorted(glob.glob(str(Path(raw_dir) / f"cycle-{scenario}-{tag}{int(trial):03d}-*.serial.log")))
+    return Path(logs[-1]).read_text(encoding="utf-8", errors="replace") if logs else ""
+
+
+def interrupted_map(rows: list[dict], raw_dir: Path | None) -> dict:
+    """(scenario, trial) -> True/False for every counted ok or failed cycle that has a serial log; missing logs are left out."""
+    out = {}
+    for r in rows:
+        if campaign.truthy(r["warmup"]) or r["status"] not in campaign.DONE_STATUSES:
+            continue
+        text = cycle_log(raw_dir, r["scenario"], r["trial"])
+        if text:
+            out[(r["scenario"], int(r["trial"]))] = update_interrupted(text)
+    return out
+
+
+def outcomes_by_start(rows: list[dict], flags: dict, scenarios: str = "AB") -> dict:
+    """ok / failed counts of the counted cycles, split by whether the harness interrupted the update."""
+    out = {}
+    for sc in scenarios:
+        cell = {"interrupted": {"ok": 0, "failed": 0}, "clean": {"ok": 0, "failed": 0}}
+        for r in rows:
+            if r["scenario"] != sc or campaign.truthy(r["warmup"]) or r["status"] not in campaign.DONE_STATUSES:
+                continue
+            f = flags.get((sc, int(r["trial"])))
+            if f is not None:
+                cell["interrupted" if f else "clean"][r["status"]] += 1
+        out[sc] = cell
+    return out
+
+
+def interruption_sensitivity(pairs: list[dict], flags: dict, metrics=("ttc_ms", "wire_bytes", "decrypt_recon_ms", "flash_kbps", "heap_peak_used"),
+                             first: str = "A", second: str = "B") -> dict:
+    """The main comparisons on all pairs and on the pairs in which neither cycle was interrupted."""
+    clean = [p for p in pairs if not flags.get((first, p["trial"])) and not flags.get((second, p["trial"]))]
+    full = {r["metric"]: r for r in paired_table(pairs, first, second)}
+    sub = {r["metric"]: r for r in paired_table(clean, first, second)} if len(clean) >= 3 else {}
+    rows = [{"metric": m, "label": full[m]["label"], "all": full[m], "clean": sub.get(m)} for m in metrics if m in full]
+    return {"n_all": len(pairs), "n_clean": len(clean), "rows": rows}
+
+
 def failures(rows: list[dict], raw_dir: Path | None = None) -> dict:
     counted = [r for r in rows if not campaign.truthy(r["warmup"])]
     detail, by_scenario = [], {}
@@ -147,7 +210,8 @@ def failures(rows: list[dict], raw_dir: Path | None = None) -> dict:
             if logs:
                 text = Path(logs[-1]).read_text(encoding="utf-8", errors="replace")
         detail.append({"scenario": r["scenario"], "trial": int(r["trial"]), "cause": classify_failure(r["note"], text),
-                       "reconstructed": bool(re.search(r"reconstructed|RECONSTRUCTED", text)), "note": r["note"]})
+                       "reconstructed": bool(re.search(r"reconstructed|RECONSTRUCTED", text)),
+                       "interrupted": update_interrupted(text) if text else "", "note": r["note"]})
     a, b = by_scenario["A"], by_scenario["B"]
     both_n, both_ok = a["attempts"] + b["attempts"], a["ok"] + b["ok"]
     lo, hi = inf.wilson_interval(both_ok, both_n)
@@ -351,6 +415,22 @@ def render(ctx: dict) -> str:
         w(f"| {sc} | {r['n_after']} | {_f(r['mean_after'], 0)} | {r['n_rest']} | {_f(r['mean_rest'], 0)} | {_f(r.get('t'))} | {_p(r.get('p_two_sided'))} |")
     w("")
 
+    w("### Why cycles failed: the harness reset race\n")
+    w("The updater starts an update on its own once the release is staged. The harness of Scenarios A and B then pulses the board's reset pin; if the update "
+      "has already begun, the reset lands in the middle of the ota_0 -> ota_1 backup copy, the delta has no base and fails (`delta decode error`). "
+      "`interrupted` = the serial log shows the update started and a reset line after it (function `update_interrupted`).\n")
+    w("| Scenario | Harness interrupted the update: ok / failed | Clean start: ok / failed |\n|---|---|---|")
+    for sc, name in (("A", "A: delta"), ("B", "B: full binary")):
+        c = ctx["by_start"][sc]
+        w(f"| {name} | {c['interrupted']['ok']} / {c['interrupted']['failed']} | {c['clean']['ok']} / {c['clean']['failed']} |")
+    sens = ctx["interrupt_sens"]
+    w(f"\nMain comparisons on all {sens['n_all']} pairs and on the {sens['n_clean']} pairs in which neither cycle was interrupted:\n")
+    w("| Metric | Reduction % (all pairs) | t | p | Reduction % (clean pairs) | t | p |\n|---|---|---|---|---|---|---|")
+    for r in sens["rows"]:
+        a, c = r["all"], r["clean"]
+        cs = "- | - | -" if not c or c.get("t") is None else f"{_f(c['reduction_pct'])} | {_f(c['t'])} | {_p(c['p'])}"
+        w(f"| {r['label']} | {_f(a['reduction_pct'])} | {_f(a['t'])} | {_p(a['p'])} | {cs} |")
+    w("")
     w("## 6. Sensitivity of the time-to-completion result\n")
     w("| Analysis | Data | Reduction % | p |\n|---|---|---|---|")
     for r in ctx["sens"]:
@@ -402,6 +482,12 @@ def render(ctx: dict) -> str:
           f"Its heap peak is {cmp_['heap_ratio_vs_updater_mean']:.1f}x the updater's mean heap peak and {cmp_['heap_ratio_vs_updater_utl']:.1f}x its upper limit.\n")
         w("Static figures (flash, static RAM) are from the SOP 4 evidence report (builds minus the Wi-Fi-only control). The peak-RAM rows take the larger heap, "
           "not the sum of the two heaps, i.e. they assume the two peaks do not coincide, which understates the not-offloaded total.\n")
+    if ctx.get("n") or ctx.get("h"):
+        from . import baselines
+        L.append(baselines.render(ctx.get("n"), ctx.get("h")).rstrip(chr(10)))
+    if ctx.get("confirm"):
+        from . import baselines
+        L.append(chr(10) + baselines.render_confirmation(ctx["confirm"]).rstrip(chr(10)))
     return "\n".join(L) + "\n"
 
 
@@ -426,8 +512,11 @@ def export(ctx: dict, out: Path, sop4: Path | None) -> list[Path]:
             for c in cols:
                 row[f"{sc}_{c}"] = p[sc].get(c, "")
         rows.append(row)
-    write_csv(data / "ab_pairs.csv", ["pair", "trial"] + [f"{sc}_{c}" for sc in "AB" for c in cols], rows)
-    write_csv(data / "failures.csv", ["scenario", "trial", "cause", "reconstructed", "note"], ctx["fail"]["detail"])
+    for row, p in zip(rows, pairs):
+        for sc in "AB":
+            row[f"{sc}_interrupted"] = ctx["interrupted"].get((sc, p["trial"]), "")
+    write_csv(data / "ab_pairs.csv", ["pair", "trial"] + [f"{sc}_{c}" for sc in "AB" for c in cols] + ["A_interrupted", "B_interrupted"], rows)
+    write_csv(data / "failures.csv", ["scenario", "trial", "cause", "reconstructed", "interrupted", "note"], ctx["fail"]["detail"])
     t3 = [r for r in ctx["t3_rows"] if not campaign.truthy(r["warmup"]) and r["status"] == "ok"]
     t3f = ["trial", "poll_ms", "sha_ms", "encap_ms", "gw_ram_mb", "gw_cpu_pct", "diff_ms", "to_dota_ms", "download_ms", "blocks"]
     write_csv(data / "table3_cycles.csv", t3f, [{k: r.get(k, "") for k in t3f} for r in t3])
@@ -435,6 +524,22 @@ def export(ctx: dict, out: Path, sop4: Path | None) -> list[Path]:
     cf = ["scenario", "trial", "status", "rejected", "delay_ms", "detect_ms", "note"]
     write_csv(data / "scenarios_cde_trials.csv", cf, [{k: r.get(k, "") for k in cf} for r in cde])
     written += [data / n for n in ("ab_pairs.csv", "failures.csv", "table3_cycles.csv", "scenarios_cde_trials.csv")]
+    if ctx.get("n"):
+        npairs = ctx["n"]["pairs"]
+        ncols = [c for c, _, _ in AB_METRICS]
+        nrows = []
+        for p in npairs:
+            row = {"pair": p["pair"], "trial": p["trial"]}
+            for sc in "AN":
+                for c in ncols:
+                    row[f"{sc}_{c}"] = p[sc].get(c, "")
+            nrows.append(row)
+        write_csv(data / "baseline_n_pairs.csv", ["pair", "trial"] + [f"{sc}_{c}" for sc in "AN" for c in ncols], nrows)
+        written.append(data / "baseline_n_pairs.csv")
+    if ctx.get("h_data"):
+        hrows = ctx["h_data"]["rows"]
+        write_csv(data / "baseline_h_runs.csv", list(hrows[0].keys()), hrows)
+        written.append(data / "baseline_h_runs.csv")
     if sop4 and ctx.get("web3"):
         wb = ctx["web3"]
         mem = wb["mem_runs"]
@@ -461,7 +566,8 @@ def write_manifest(out: Path, extra: list[Path]) -> Path:
     return path
 
 
-def analyse(ab_run: Path, t3_run: Path, cde_csv: Path, web3_run: Path | None = None) -> dict:
+def analyse(ab_run: Path, t3_run: Path, cde_csv: Path, web3_run: Path | None = None, n_run: Path | None = None,
+            h_run: Path | None = None, confirm_run: Path | None = None) -> dict:
     ab_csv, t3_csv = Path(ab_run) / "campaign" / "trials.csv", Path(t3_run) / "campaign" / "table3.csv"
     rows, t3_rows, cde_rows = load_rows(ab_csv), load_rows(t3_csv), load_rows(Path(cde_csv))
     pairs = select_pairs(rows)
@@ -469,6 +575,26 @@ def analyse(ab_run: Path, t3_run: Path, cde_csv: Path, web3_run: Path | None = N
            "rows": rows, "t3_rows": t3_rows, "cde_rows": cde_rows, "pairs": pairs, "paired": paired_table(pairs),
            "root": root_cause(pairs), "fail": failures(rows, Path(ab_run) / "raw"), "after": after_failure_effect(rows),
            "sens": sensitivity(rows, pairs), "t3": table3_stats(t3_rows), "cde": scenario_stats(cde_rows)}
+    if n_run or h_run:
+        from . import baselines
+        if n_run:
+            n_csv = Path(n_run) / "campaign" / "trials.csv"
+            ctx["inputs"].append(("Scenario N, naked CoAP delta (supplementary)", n_csv))
+            ctx["n_rows"] = load_rows(n_csv)
+            ctx["n"] = baselines.n_analysis(ctx["n_rows"], Path(n_run) / "raw")
+        if h_run:
+            ctx["inputs"].append(("Scenario H, HTTPS full binary (supplementary)", Path(h_run) / "campaign" / "https_runs.csv"))
+            ctx["h_data"] = baselines.load_h(Path(h_run))
+            ctx["h"] = baselines.h_analysis(ctx["h_data"], pairs)
+    if confirm_run:
+        from . import baselines
+        c_csv = Path(confirm_run) / "campaign" / "trials.csv"
+        ctx["inputs"].append(("Confirmation run, A and B on the fixed harness", c_csv))
+        ctx["confirm"] = baselines.confirmation(load_rows(c_csv), Path(confirm_run) / "raw", pairs)
+    flags = interrupted_map(rows, Path(ab_run) / "raw")
+    ctx["interrupted"] = flags
+    ctx["by_start"] = outcomes_by_start(rows, flags)
+    ctx["interrupt_sens"] = interruption_sensitivity(pairs, flags)
     if web3_run:
         log = Path(web3_run) / "raw" / "serial-web3_baseline.log"
         ctx["inputs"].append(("On-device Web3 client (SOP 4)", log))
@@ -486,13 +612,18 @@ def main(argv=None) -> int:
     ap.add_argument("--web3")
     ap.add_argument("--out", required=True)
     ap.add_argument("--sop4")
+    ap.add_argument("--n", help="the A/N campaign folder (naked-CoAP baseline, supplementary)")
+    ap.add_argument("--h", help="the HTTPS baseline run folder (supplementary)")
+    ap.add_argument("--confirm", help="the A/B confirmation run folder (fixed harness)")
     ap.add_argument("--tables", action="store_true", help="also write TABLES-1-AND-4.md and TABLES-2-AND-3.md (the approved tables, filled)")
     ap.add_argument("--base", help="v1.0 image for Table 1 (default: found like SOP 1 does)")
     ap.add_argument("--target", help="v1.1 image for Table 1")
     ap.add_argument("--draft", help="refresh the Appendix of this chapter draft from the table documents (needs --tables)")
     a = ap.parse_args(argv)
     out = Path(a.out).resolve()
-    ctx = analyse(Path(a.ab).resolve(), Path(a.t3).resolve(), Path(a.cde).resolve(), Path(a.web3).resolve() if a.web3 else None)
+    ctx = analyse(Path(a.ab).resolve(), Path(a.t3).resolve(), Path(a.cde).resolve(), Path(a.web3).resolve() if a.web3 else None,
+                  Path(a.n).resolve() if a.n else None, Path(a.h).resolve() if a.h else None,
+                  Path(a.confirm).resolve() if a.confirm else None)
     (out).mkdir(parents=True, exist_ok=True)
     (out / "STATISTICS.md").write_text(render(ctx), encoding="utf-8")
     extra = export(ctx, out, Path(a.sop4).resolve() if a.sop4 else None)
@@ -523,6 +654,11 @@ def write_table_documents(ctx: dict, out: Path, base: str | None, target: str | 
     (out / "TABLES-1-AND-4.md").write_text(doc14, encoding="utf-8")
     (out / "TABLES-2-AND-3.md").write_text(doc23, encoding="utf-8")
     print(f"wrote {out / 'TABLES-1-AND-4.md'} and {out / 'TABLES-2-AND-3.md'}")
+    if ctx.get("n") and ctx.get("h"):
+        n_csv = next(Path(p) for name, p in ctx["inputs"] if name.startswith("Scenario N"))
+        h_csv = next(Path(p) for name, p in ctx["inputs"] if name.startswith("Scenario H"))
+        (out / "BASELINES.md").write_text(table_docs.baselines_doc(ctx=ctx, n_csv=n_csv, h_dir=h_csv.parents[1], head=head), encoding="utf-8")
+        print(f"wrote {out / 'BASELINES.md'}")
     if draft:
         raw = draft.read_bytes().decode("utf-8")
         crlf, lf = chr(13) + chr(10), chr(10)

@@ -123,3 +123,16 @@ Table 2 cycle n is the n-th complete A/B pair (both scenarios `ok` for the same 
 for that metric only. `inference.py` also holds the supporting tests used in the discussion (sign test, Pearson r, Fisher exact, Wilson interval, Welch t).
 `sop4.hw_session` erases `otadata` after `pio run -t upload` (the upload also selects `ota_0`, so the baseline would never boot on a board holding an application).
 Put the board back in demonstration state afterwards with `tools\flash_device.bat reset COMx` in the firmware repo.
+
+## Chapter 3 comparators (H and N), the harness race and the confirmation run
+| Module | What it does | Command (from `gateway\`) |
+|---|---|---|
+| `https_hw.py` | Baseline H: the full image over HTTPS (TLS 1.2), 63 downloads in one boot, tshark per TCP stream, writes `campaign/https_runs.csv` | `python -m sop.https_hw --serial COM3 --lan-ip <PC> --iface <n> --runs 63 --allow-flash` |
+| `device_cycle.py` (scenario `N`) | Baseline N: the same delta over naked CoAP (plaintext blocks, no AES-CCM); interleaved with a fresh A; the rig flashes the secured or the naked updater on demand | `python -m sop.device_cycle --scenarios A,N --trials 60 --warmup 3 --static-ram-bytes 29416 --static-ram-naked-bytes 28328 ...` |
+| `baselines.py` | Analysis of H and N (Equations 3 and 4, the security tax A minus N) and of the confirmation run | add `--n`, `--h`, `--confirm` to the `chapter4` command |
+| `thesis_tables.table2s` | Supplementary Table S2 (not an approved table) | via `chapter4 ... --tables` (writes `BASELINES.md`) |
+
+Harness race (found during the N campaign): the updater starts an update by itself once the release is staged; resetting the board then interrupts its ota_0 -> ota_1
+backup copy and the delta fails (`delta decode error`). `LocalRig` now starts the capture before publishing and does **not** reset a device that has begun
+(`update_interrupted()` in `chapter4.py` detects interrupted cycles in older logs). The firmware side (`https_baseline`, `https_control`, `factory_naked`) is in the firmware
+repository, tag `baselines-fw-1`. The gateway's naked framing is switched by `DELTA_NAKED=1` or a flag file (`DELTA_NAKED_FILE`); it is never set in the product.

@@ -157,6 +157,70 @@ def fig_sop4(ctx: dict, path: Path) -> Path:
     return path
 
 
+def fig_https(ctx: dict, path: Path) -> Path:
+    """Baseline H (HTTPS full binary) against the proposed architecture: bytes on the wire and peak RAM against the Class 2 budget."""
+    plt = _plt()
+    h = ctx["h"]
+    e3, e4 = h["eq3"], h["eq4"]
+    fig, ax = plt.subplots(1, 3, figsize=(13, 4.6), gridspec_kw={"width_ratios": [1, 1.25, 1]})
+    names = ["H: HTTPS\nfull binary", "A: proposed\ndelta"]
+    ax[0].bar(names, [e3["h_mean"] / 1024, e3["a_mean"] / 1024], color=[B_COLOR, A_COLOR], width=0.55)
+    for x, v in enumerate((e3["h_mean"], e3["a_mean"])):
+        ax[0].text(x, v / 1024 + 6, f"{v:,.0f} B", ha="center")
+    ax[0].set_ylabel("Bytes on the wire per update (KiB)")
+    ax[0].set_title(f"Eq. 3: {e3['reduction_pct']:.1f}% fewer bytes")
+    a_static, h_static = e4["a_static"], e4["h_static"]
+    labels = ["H: HTTPS\nfull binary", "A: proposed\n(mean heap)", "A: proposed\n(max heap)"]
+    statics = [h_static, a_static, a_static]
+    heaps = [e4["h_heap_max"], e4["a_heap_mean"], e4["a_heap_max"]]
+    ax[1].bar(labels, [v / 1024 for v in statics], color=A_COLOR, width=0.55, label="static RAM")
+    ax[1].bar(labels, [v / 1024 for v in heaps], bottom=[v / 1024 for v in statics], color=ACCENT, width=0.55, label="peak heap")
+    ax[1].axhline(50, color="black", ls="--", lw=1.3)
+    ax[1].text(2.45, 51.5, "Class 2 budget 50 KiB", ha="right", fontsize=9)
+    for x, (sv, hv) in enumerate(zip(statics, heaps)):
+        ax[1].text(x, (sv + hv) / 1024 + 1.5, f"{(sv + hv) / 1024:.1f} KiB ({(sv + hv) / 51200:.0%})", ha="center", fontsize=9)
+    ax[1].set_ylabel("Peak RAM (KiB)")
+    ax[1].set_ylim(0, (statics[0] + heaps[0]) / 1024 * 1.2)
+    ax[1].set_title(f"Eq. 4: {e4['reduction_pct_mean']:.0f}% (A mean) to {e4['reduction_pct_max']:.0f}% (A max) less")
+    ax[1].legend(frameon=False, loc="upper right")
+    t = h["ttc"]
+    ax[2].bar(["H: HTTPS", "A: proposed"], [t["h"]["mean"] / 1000, t["a"]["mean"] / 1000], yerr=[t["h"]["sd"] / 1000, t["a"]["sd"] / 1000],
+              color=[B_COLOR, A_COLOR], width=0.55, capsize=6)
+    for x, v in enumerate((t["h"]["mean"], t["a"]["mean"])):
+        ax[2].text(x, v / 1000 / 2, f"{v / 1000:.2f} s", ha="center", color="white", fontweight="bold")
+    ax[2].set_ylabel("Time to completion (s, mean ± SD)")
+    ax[2].set_title(f"Time: A is {abs(t['reduction_pct_a_vs_h']):.0f}% {'longer' if t['reduction_pct_a_vs_h'] < 0 else 'shorter'} than H")
+    fig.suptitle("Chapter 3 Baseline A: the full binary over HTTPS (H) against the proposed architecture (A)", y=1.03, fontweight="bold")
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
+def fig_security_tax(ctx: dict, path: Path) -> Path:
+    """Baseline N (naked CoAP delta) against A: what the security costs, per update."""
+    plt = _plt()
+    n = ctx["n"]
+    tab = {r["metric"]: r for r in n["table"]}
+    fig, ax = plt.subplots(1, 3, figsize=(12.5, 4.4))
+    panels = (("ttc_ms", "Time to completion (s)", 1000.0, 2), ("decrypt_recon_ms", "Decryption + reconstruction (s)", 1000.0, 3),
+              ("wire_bytes", "Bytes on the wire (KiB)", 1024.0, 2))
+    for axis, (metric, label, div, dec) in zip(ax, panels):
+        r = tab[metric]
+        axis.bar(["A: secured", "N: naked"], [r["mean_A"] / div, r["mean_N"] / div], yerr=[r["sd_A"] / div, r["sd_N"] / div],
+                 color=[A_COLOR, GREY], width=0.55, capsize=6)
+        lo = min(r["mean_A"], r["mean_N"]) / div
+        axis.set_ylim(0, max(r["mean_A"] + r["sd_A"], r["mean_N"] + r["sd_N"]) / div * 1.22)
+        txt = f"A - N = {r['mean_diff'] / div:+.{dec}f}"
+        if not r["degenerate"]:
+            txt += f"  (p = {r['p']:.0e})" if r["p"] < 0.001 else f"  (p = {r['p']:.2f})"
+        axis.text(0.5, 0.97, txt, transform=axis.transAxes, ha="center", va="top", fontsize=9.5)
+        axis.set_ylabel(label)
+    fig.suptitle(f"Chapter 3 Baseline B: the security tax, secured delta (A) minus naked CoAP delta (N), {n['n_pairs']} matched pairs", y=1.02, fontweight="bold")
+    fig.savefig(path, dpi=160)
+    plt.close(fig)
+    return path
+
+
 def make_all(ctx: dict, out_dir: Path) -> list[Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     made = [fig_payload(ctx, out_dir / "fig1_payload.png"), fig_ttc(ctx, out_dir / "fig2_time_to_completion.png"),
@@ -164,6 +228,10 @@ def make_all(ctx: dict, out_dir: Path) -> list[Path]:
             fig_retransmissions(ctx, out_dir / "fig4_time_vs_repeated_requests.png")]
     if ctx.get("web3"):
         made.append(fig_sop4(ctx, out_dir / "fig5_ledger_check_and_ram.png"))
+    if ctx.get("h"):
+        made.append(fig_https(ctx, out_dir / "fig6_https_baseline.png"))
+    if ctx.get("n"):
+        made.append(fig_security_tax(ctx, out_dir / "fig7_security_tax.png"))
     return made
 
 
@@ -172,8 +240,11 @@ def main(argv=None) -> int:
     for name in ("ab", "t3", "cde", "out"):
         ap.add_argument(f"--{name}", required=True)
     ap.add_argument("--web3")
+    ap.add_argument("--n")
+    ap.add_argument("--h")
     a = ap.parse_args(argv)
-    ctx = c4.analyse(Path(a.ab).resolve(), Path(a.t3).resolve(), Path(a.cde).resolve(), Path(a.web3).resolve() if a.web3 else None)
+    ctx = c4.analyse(Path(a.ab).resolve(), Path(a.t3).resolve(), Path(a.cde).resolve(), Path(a.web3).resolve() if a.web3 else None,
+                      Path(a.n).resolve() if a.n else None, Path(a.h).resolve() if a.h else None)
     out = Path(a.out).resolve() / "figures"
     made = make_all(ctx, out)
     print(f"wrote {len(made)} figures to {out}")

@@ -142,3 +142,60 @@ def table3(rows: list[dict], cycles: int = APPROVED_CYCLES) -> str:
     done = len(vals["poll_ms"])
     note = "" if done == cycles else f"\n\n*Incomplete: {done}/{cycles} cycles.*"
     return f"**{TABLE3_TITLE}**\n\n" + _md(TABLE3_COLUMNS, body) + note
+
+
+# ------------------------------------------------------------------ Supplementary Table S2 (NOT one of the approved tables)
+TABLE2S_TITLE = "Supplementary Table S2. Continuous Metrics for the Chapter 3 Comparators (not an approved instrument)"
+TABLE2S_COLUMNS = ["Cycle #", "Scenario Type", "Wireshark TTC (ms)", "ESP32 Peak Ram Allocation (KB, static)",
+                   "Decryption + Reconstruction Time (ms)", "Total Flash Write Throughput (KB/s)", "Bytes on the wire", "Peak heap (B)"]
+TABLE2S_NOTE = ("Supplementary: the approved Tables 1 to 4 are unchanged. A is re-measured in the same rounds as N (paired); N is the naked-CoAP delta "
+                "(Chapter 3 Baseline B); H is the full binary over HTTPS (Chapter 3 Baseline A), 60 downloads in one boot. For H the "
+                "Decryption + Reconstruction cell is the receive-and-decrypt time (download time minus flash time), and the peak heap is one value for the series "
+                "(the highest of the 60 downloads), shown in the footer row.")
+
+
+def _num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def table2s(an_pairs: list[dict], h_rows: list[dict], h_heap_peak: int | None = None, cycles: int = APPROVED_CYCLES) -> str:
+    """Rows A and N per matched pair, rows H per counted download, then the mean and SD of each, from recorded data only.
+
+    `an_pairs` = [{"pair": i, "A": row, "N": row}, ...] (chapter4.select_pairs with scenarios ("A", "N")); `h_rows` = the counted ok rows of https_runs.csv.
+    """
+    def a_cells(r):
+        return [r.get("ttc_ms"), r.get("static_ram_kb"), r.get("decrypt_recon_ms"), r.get("flash_kbps"), r.get("wire_bytes"), r.get("heap_peak_used")]
+
+    def h_cells(r):
+        recv = None
+        if _num(r.get("download_ms")) is not None and _num(r.get("flash_us")) is not None:
+            recv = _num(r["download_ms"]) - _num(r["flash_us"]) / 1000.0
+        return [r.get("ttc_ms"), r.get("static_ram_kb"), recv, r.get("flash_kbps"), r.get("wire_bytes"), None]
+
+    digits = (1, 2, 1, 1, 0, 0)
+    fmt = lambda cells: [_fmt(_num(c), d) for c, d in zip(cells, digits)]
+    groups = {"A": [a_cells(p["A"]) for p in an_pairs[:cycles]], "N": [a_cells(p["N"]) for p in an_pairs[:cycles]],
+              "H": [h_cells(r) for r in h_rows[:cycles]]}
+    labels = {"A": "A (Delta-OTA, paired with N)", "N": "N (Naked CoAP delta)", "H": "H (HTTPS full binary)"}
+    body = []
+    for i in range(cycles):
+        for sc in ("A", "N"):
+            body.append([str(i + 1), labels[sc], *(fmt(groups[sc][i]) if i < len(groups[sc]) else ["-"] * 6)])
+    for i in range(cycles):
+        body.append([str(i + 1), labels["H"], *(fmt(groups["H"][i]) if i < len(groups["H"]) else ["-"] * 6)])
+    for stat, idx in (("Arithmetic Mean", 0), ("Standard Deviation", 1)):
+        for sc in ("A", "N", "H"):
+            cells = []
+            for k, d in enumerate(digits):
+                vals = [v for v in (_num(c[k]) for c in groups[sc]) if v is not None]
+                cells.append(_stats(vals, d)[idx] if vals else "-")
+            body.append(["STAT", f"{stat} ({labels[sc]})", *cells])
+    if h_heap_peak is not None:
+        body.append(["FOOTER", "H peak heap, highest of the downloads", "-", "-", "-", "-", "-", f"{h_heap_peak:,}"])
+    done = {sc: len(groups[sc]) for sc in groups}
+    nl = chr(10)
+    note = "" if all(n == cycles for n in done.values()) else nl * 2 + "*Incomplete: " + ", ".join(f"{sc} {done[sc]}/{cycles}" for sc in groups) + ".*"
+    return f"**{TABLE2S_TITLE}**" + nl * 2 + _md(TABLE2S_COLUMNS, body) + note + nl * 2 + f"*{TABLE2S_NOTE}*"

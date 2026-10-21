@@ -21,11 +21,14 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PAIRED = ("A", "B")
+NAKED = ("N",)                          # the naked-CoAP baseline (Chapter 3 Baseline B): interleaved with A in the same rounds
 DETERMINISTIC = ("C", "D", "E")
 GATEWAY_ONLY = ("T3",)                  # Table 3: gateway-only profiling cycles (no device), sequential, with warm-up
 SCENARIO_TEXT = {
     "A": "Normal delta OTA update (secured)",
     "B": "Full-binary OTA update (secured): comparison baseline",
+    "N": "Naked CoAP delta update (no AES-CCM, no key): Chapter 3 Baseline B for the security tax",
+    "H": "HTTPS full-binary download (TLS 1.2): Chapter 3 Baseline A for Equations 3 and 4",
     "C": "Tampered patch (one byte altered)",
     "T3": "Gateway profiling cycle on the Raspberry Pi (Table 3)",
     "D": "Kill switch: a revoked release must not be served",
@@ -64,7 +67,7 @@ def make_schedule(trials: int = 60, warmup: int = 3, seed: int = 20261015,
     """The full ordered list of trials. Deterministic for a given seed."""
     rng = random.Random(seed)
     slots: list[Slot] = []
-    paired = [s for s in scenarios if s in PAIRED]
+    paired = [s for s in scenarios if s in PAIRED or s in NAKED]
     for rnd in range(1, warmup + trials + 1):
         order = list(paired)
         rng.shuffle(order)

@@ -53,9 +53,10 @@ def esptool_cmd(pio: str, port: str, *args: str) -> list[str]:
     return [str(py), str(esptool), "--chip", "esp32", "--port", port, *args]
 
 
-def hw_session(ctx: RunContext, project: Path, pio: str, port: str, build_flags: str, seconds: int,
+def hw_session(ctx: RunContext, project: Path, pio: str, port: str, build_flags: str, seconds: int, env_name: str = "web3_baseline",
                run=subprocess.run, capture_cls=SerialCapture) -> dict:
-    """Flash web3_baseline, capture it, and always restore the factory updater.
+    """Flash a measurement build (web3_baseline by default; https_baseline for the HTTPS baseline), capture it, and always
+    restore the factory updater.
     `run` and `capture_cls` are injectable so the sequence is testable without a board."""
     raw = ctx.sub("raw")
     flashed = False
@@ -64,12 +65,12 @@ def hw_session(ctx: RunContext, project: Path, pio: str, port: str, build_flags:
     if build_flags:
         env["PLATFORMIO_BUILD_FLAGS"] = build_flags
     try:
-        up = run([pio, "run", "-e", "web3_baseline", "-t", "upload", "--upload-port", port],
+        up = run([pio, "run", "-e", env_name, "-t", "upload", "--upload-port", port],
                  cwd=project, env=env, capture_output=True, text=True, timeout=900)
         flashed = True                                   # something may have been written
-        (raw / "pio-upload-web3_baseline.log").write_text((up.stdout or "") + (up.stderr or ""), encoding="utf-8")
+        (raw / f"pio-upload-{env_name}.log").write_text((up.stdout or "") + (up.stderr or ""), encoding="utf-8")
         if up.returncode != 0:
-            raise RuntimeError("upload of web3_baseline failed - see raw/pio-upload-web3_baseline.log")
+            raise RuntimeError(f"upload of {env_name} failed - see raw/pio-upload-{env_name}.log")
         # `pio run -t upload` also writes boot_app0, which selects ota_0: on a board that holds an application the
         # bootloader would keep starting that application and never the baseline. Erase otadata so the factory slot
         # (where the baseline was written) boots, exactly as toolslash_device.bat does after a factory upload.
@@ -78,13 +79,13 @@ def hw_session(ctx: RunContext, project: Path, pio: str, port: str, build_flags:
         (raw / "erase-otadata-after-upload.log").write_text((er.stdout or "") + (er.stderr or ""), encoding="utf-8")
         if er.returncode != 0:
             raise RuntimeError("erasing otadata failed - see raw/erase-otadata-after-upload.log")
-        cap = capture_cls(port, log_path=raw / "serial-web3_baseline.log").open()
+        cap = capture_cls(port, log_path=raw / f"serial-{env_name}.log").open()
         try:
             cap.reset_board()
             text = cap.capture(seconds, until=r"\[SOP4\] done")
         finally:
             cap.close()
-        result["log"] = "raw/serial-web3_baseline.log"
+        result["log"] = f"raw/serial-{env_name}.log"
         result["parsed"] = parse_log(text)
         return result
     finally:

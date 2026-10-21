@@ -17,6 +17,11 @@ WEB3 = re.compile(
     r" ok=([01])(?: why=(\S+))?"
     r"(?: approvals=(\d+) live=([01]) revoked=([01]))?"
 )
+# Experiment baseline H (HTTPS full-binary download), one line per run:
+#   [HTTPS] run=N connect_ms=.. download_ms=.. flash_us=.. flash_bytes=.. bytes=.. ok=1      or    ... ok=0 why=..
+HTTPS = re.compile(
+    r"\[HTTPS\] run=(\d+)(?: connect_ms=(\d+))?(?: download_ms=(\d+) flash_us=(\d+) flash_bytes=(\d+) bytes=(\d+))?"
+    r" ok=([01])(?: why=(\S+))?")
 # Added for the experiment's Table 2: the device's busy time and flash writes during one update stream.
 #   decrypt_us   time in AES-CCM decryption of all blocks
 #   feed_us      time in the DOTA decoder (inflate + merge + flash writes, incl. esp_ota_begin's erase)
@@ -40,7 +45,8 @@ def split_stamp(line: str) -> tuple[float | None, str]:
 
 def parse_log(text: str) -> dict:
     out = {"mem": [], "metrics": [], "web3": [], "banners": [], "app_version": None, "updates": [],
-           "metrics2": [], "reconstructed": [], "update_failed": [], "wifi_ip": None, "app_versions": [], "no_release": []}
+           "metrics2": [], "reconstructed": [], "update_failed": [], "wifi_ip": None, "app_versions": [], "no_release": [],
+           "https": []}
     for raw in text.splitlines():
         t, line = split_stamp(raw)
         if m := MEM.search(line):
@@ -48,6 +54,12 @@ def parse_log(text: str) -> dict:
         elif m := METRICS.search(line):
             out["metrics"].append({"t": t, "n": int(m.group(1)), "avg_us": int(m.group(2)),
                                    "min_us": int(m.group(3)), "max_us": int(m.group(4))})
+        elif m := HTTPS.search(line):
+            out["https"].append({
+                "t": t, "run": int(m.group(1)), "connect_ms": int(m.group(2)) if m.group(2) else None,
+                "download_ms": int(m.group(3)) if m.group(3) else None, "flash_us": int(m.group(4)) if m.group(4) else None,
+                "flash_bytes": int(m.group(5)) if m.group(5) else None, "bytes": int(m.group(6)) if m.group(6) else None,
+                "ok": m.group(7) == "1", "why": m.group(8)})
         elif m := WEB3.search(line):
             out["web3"].append({
                 "t": t, "run": int(m.group(1)), "tls_connect_ms": int(m.group(2)),

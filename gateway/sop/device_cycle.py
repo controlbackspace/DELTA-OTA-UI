@@ -40,7 +40,8 @@ from .serial_parse import parse_log, peak_heap
 VERSION = "v1.1"
 TSHARK = Path(r"C:\Program Files\Wireshark\tshark.exe")
 TSHARK_FIELDS = ["frame.time_epoch", "ip.src", "ip.dst", "coap.code", "coap.opt.uri_path", "coap.opt.uri_query", "udp.length"]
-UPDATE_TIMEOUT_S = {"A": 120, "B": 240}
+UPDATE_TIMEOUT_S = {"A": 120, "B": 240, "N": 120}
+DELTA_SCENARIOS = ("A", "N")            # the bsdiff4 patch is the payload; B sends the full image
 MAX_ATTEMPTS = 3
 IPV4_HEADER = 20
 
@@ -174,13 +175,25 @@ def run_cycle(rig, slot: Slot, static_ram: float | None, with_device: bool = Tru
     """One cycle on a rig. Returns the campaign-row fields (status, note and the measured cells)."""
     t0 = time.time()
     try:
+        if hasattr(rig, "set_scenario"):
+            rig.set_scenario(slot.scenario)
         if with_device:
             rig.prepare()
+        captured = False
+        if with_device and getattr(rig, "capture_before_publish", False):
+            if hasattr(rig, "set_label"):
+                rig.set_label(f"{slot.scenario}-{'w' if slot.warmup else 'c'}{slot.trial:03d}")
+            rig.capture_start()                       # attached before the release exists: nothing of the update can be missed
+            captured = True
         pub = rig.publish(slot.scenario)
         staged = rig.wait_staged()
     except RigError as e:
+        if hasattr(rig, "capture_abort"):
+            rig.capture_abort()
         return {"status": "invalid", "note": str(e)}
     if not staged.get("ok"):
+        if hasattr(rig, "capture_abort"):
+            rig.capture_abort()
         rig.cleanup()
         return {"status": "invalid", "note": "the gateway did not stage the release in time"}
     row = {"payload_bytes": pub.get("payload_bytes"), "diff_ms": pub.get("diff_ms"), "gas_propose": pub.get("gas_propose"),
@@ -195,10 +208,13 @@ def run_cycle(rig, slot: Slot, static_ram: float | None, with_device: bool = Tru
     try:
         if hasattr(rig, "set_label"):
             rig.set_label(f"{slot.scenario}-{'w' if slot.warmup else 'c'}{slot.trial:03d}")
-        rig.capture_start()
+        if not captured:
+            rig.capture_start()
         log_text = rig.run_update(UPDATE_TIMEOUT_S.get(slot.scenario, 240))
         capture_text = rig.capture_stop()
     except RigError as e:
+        if hasattr(rig, "capture_abort"):
+            rig.capture_abort()
         rig.cleanup()
         return {"status": "invalid", "note": str(e)}
     gw = rig.gateway_record()
@@ -208,11 +224,15 @@ def run_cycle(rig, slot: Slot, static_ram: float | None, with_device: bool = Tru
     status, note = judge_cycle(serial, ttc)
     row.update(device_columns(serial))
     row.update(gateway_columns(gw))
-    row["static_ram_kb"] = static_ram
+    row["static_ram_kb"] = static_ram.get(slot.scenario) if isinstance(static_ram, dict) else static_ram
+    if hasattr(rig, "image_sha256"):
+        row["image_sha256"] = rig.image_sha256
     if ttc.get("ok"):
         row.update({"ttc_ms": ttc["ttc_ms"], "wire_bytes": ttc["wire_bytes"], "requests": ttc["requests"],
                     "retransmissions": ttc["retransmissions"]})
     row["status"], row["note"] = status, f"{note} ({time.time() - t0:.0f} s)"
+    if getattr(rig, "started_unprompted", False):
+        row["note"] += "; the device had already started the update, so it was not reset"
     return row
 
 
@@ -268,8 +288,8 @@ class _BaseRig:
         import bsdiff4
         base, target = self.base.read_bytes(), self.target.read_bytes()
         t0 = time.perf_counter()
-        payload = bsdiff4.diff(base, target) if scenario == "A" else target
-        diff_ms = (time.perf_counter() - t0) * 1000.0 if scenario == "A" else None
+        payload = bsdiff4.diff(base, target) if scenario in DELTA_SCENARIOS else target
+        diff_ms = (time.perf_counter() - t0) * 1000.0 if scenario in DELTA_SCENARIOS else None
         golden = hashlib.sha256(payload).hexdigest()
         (self.artifacts / f"patch_{VERSION}.bin").write_bytes(payload)
         url = f"http://{self.lan_ip}:8000/patch_{VERSION}.bin"
@@ -299,9 +319,21 @@ class _BaseRig:
 class LocalRig(_BaseRig):
     """Scenarios A and B: gateway process on this PC, ESP32 on the serial port, capture with tshark."""
 
-    def __init__(self, ctx, *, serial_port: str, lan_ip: str, iface: str, firmware_dir=None, hardhat_port: int = 18545, say=print):
+    # The updater starts an update by itself as soon as the gateway has staged the release. A reset pulse at that moment lands in
+    # the middle of its ota_0 -> ota_1 backup copy and the delta then has no base ("delta decode error"). So the capture is attached
+    # before the release is published, and run_update() only resets a device that has not begun yet.
+    capture_before_publish = True
+    started_unprompted = False
+
+    def __init__(self, ctx, *, serial_port: str, lan_ip: str, iface: str, firmware_dir=None, hardhat_port: int = 18545, say=print,
+                 naked: bool = False):
         super().__init__(ctx, lan_ip, firmware_dir, hardhat_port, say)
         self.serial_port, self.iface = serial_port, iface
+        self.naked = naked                       # scenario N takes part: two updaters, flashed on demand
+        self.scenario = "A"
+        self._updater: str | None = None         # the updater in the factory slot: unknown at start, so the first cycle flashes the one it needs
+        self.updater_sha256: dict[str, str] = {}
+        self.image_sha256 = ""
         self._full_reset = False
         self.gw = self.ser = None
         self._tshark = self._pcap = None
@@ -319,9 +351,13 @@ class LocalRig(_BaseRig):
         from .serial_capture import SerialCapture
         raw = self.ctx.sub("raw")
         self._start_chain("127.0.0.1")
+        if self.naked:
+            self._build_updaters()
         self.gw = GatewayProc(self.node.url, self.address, self.work, raw / "cycles-gateway.log", bind=self.lan_ip,
                               key_hex=read_ota_key(self.project), artifact_server=True,
-                              extra_env={"DELTA_METRICS": "1", "DELTA_METRICS_FILE": str(self.work / "gateway_metrics.json")})
+                              extra_env={"DELTA_METRICS": "1", "DELTA_METRICS_FILE": str(self.work / "gateway_metrics.json"),
+                                         "DELTA_NAKED_FILE": str(self.naked_flag)})
+        self._write_naked_flag(False)
         self.gw.start()
         ready, _ = self.gw.wait_for(lambda s: s.get("gateway_state") == "waiting", 90)
         if not ready:
@@ -339,6 +375,63 @@ class LocalRig(_BaseRig):
     def note_result(self, status: str) -> None:
         self._full_reset = status == "failed"        # a version recorded as failed is never retried: wipe and re-provision
 
+    # ---- the secured and the naked updater share the factory slot; N cycles flash the naked one on demand --------------
+    @property
+    def naked_flag(self) -> Path:
+        return self.work / "naked.flag"
+
+    def _write_naked_flag(self, on: bool) -> None:
+        self.naked_flag.write_text("1" if on else "0", encoding="utf-8")
+
+    def set_scenario(self, scenario: str) -> None:
+        self.scenario = scenario
+
+    def _updater_bin(self, kind: str) -> Path:
+        env = "factory_naked" if kind == "naked" else "factory"
+        return self.project / ".pio" / "build" / env / "firmware.bin"
+
+    def _build_updaters(self) -> None:
+        """Build both updaters (so the images flashed are current) and record their hashes."""
+        from .footprint import find_pio
+        pio = find_pio()
+        if pio is None:
+            raise RigError("PlatformIO (pio) not found")
+        for env, kind in (("factory", "secured"), ("factory_naked", "naked")):
+            r = subprocess.run([pio, "run", "-e", env], cwd=self.project, capture_output=True, text=True, timeout=900)
+            (self.ctx.sub("raw") / f"build-{env}.log").write_text((r.stdout or "") + (r.stderr or ""), encoding="utf-8")
+            if r.returncode != 0:
+                raise RigError(f"building {env} failed - see raw/build-{env}.log")
+            self.updater_sha256[kind] = hashlib.sha256(self._updater_bin("naked" if kind == "naked" else "factory").read_bytes()).hexdigest()
+        self.pio = pio
+
+    def _flash_updater(self, kind: str) -> None:
+        """Write the secured or the naked updater into the factory slot (esptool, as flash_device.bat does) and erase otadata.
+        The 774 KB image goes at 460800 baud (about 10 s); if that fails it is retried once at the default speed."""
+        from .sop4 import esptool_cmd
+        b = self._updater_bin(kind)
+        write = ("write_flash", "--flash_mode", "keep", "--flash_freq", "keep", "--flash_size", "keep", "0x10000", str(b))
+        attempts = (("--baud", "460800"), ())
+        for i, speed in enumerate(attempts):
+            r = subprocess.run(esptool_cmd(self.pio, self.serial_port, *speed, *write), cwd=self.project, capture_output=True, text=True, timeout=300)
+            (self.ctx.sub("raw") / f"flash-updater-{kind}.log").write_text((r.stdout or "") + (r.stderr or ""), encoding="utf-8")
+            if r.returncode == 0:
+                break
+            if i == len(attempts) - 1:
+                raise RigError(f"flashing the {kind} updater failed (exit {r.returncode})")
+        r = subprocess.run(esptool_cmd(self.pio, self.serial_port, "erase_region", "0xd000", "0x2000"), cwd=self.project,
+                           capture_output=True, text=True, timeout=300)
+        if r.returncode != 0:
+            raise RigError(f"erasing otadata failed (exit {r.returncode})")
+        self._updater = kind
+
+    def _ensure_updater(self) -> None:
+        want = "naked" if self.scenario == "N" else "factory"
+        if self._updater != want:
+            self.ser.close()                       # prepare() reopens the port once, after this
+            self._flash_updater("naked" if want == "naked" else "factory")
+        self.image_sha256 = self.updater_sha256.get("naked" if want == "naked" else "secured", "")
+        self._write_naked_flag(want == "naked")
+
     def _flash(self, mode: str) -> None:
         bat = self.project / "tools" / "flash_device.bat"
         args = [str(bat), mode, self.serial_port] + (["v1.0"] if mode == "app" else [])
@@ -351,7 +444,11 @@ class LocalRig(_BaseRig):
     def prepare(self) -> None:
         self.ser.close()
         self._flash("reset" if self._full_reset else "app")
+        if self._full_reset:
+            self._updater = "factory"                # `reset` rebuilds and flashes the secured updater
         self._full_reset = False
+        if self.naked:
+            self._ensure_updater()
         from .serial_capture import SerialCapture
         self.ser = SerialCapture(self.serial_port).open()
         self.ser.reset_board()
@@ -379,9 +476,29 @@ class LocalRig(_BaseRig):
         time.sleep(2.0)                                            # let the capture attach before the device speaks
 
     def run_update(self, timeout: float) -> str:
-        self.ser.log_path = self.ctx.sub("raw") / f"cycle-{self._label}-{self._stamp}.serial.log"   # raw evidence per cycle
-        self.ser.reset_board()
-        return self.ser.capture(timeout, until=r"Application: v1\.1")
+        log = self.ctx.sub("raw") / f"cycle-{self._label}-{self._stamp}.serial.log"                  # raw evidence per cycle
+        self.ser.log_path = log
+        self.started_unprompted = False
+        pre = self.ser.capture(1.0)                       # what the device printed so far (drains the port); no reset yet
+        if re.search(r"Update available|Backing up", pre):
+            self.started_unprompted = True               # the update is already running: leave the device alone
+            rest = "" if re.search(r"Application: v1\.1", pre) else self.ser.capture(timeout, until=r"Application: v1\.1")
+            text = pre + rest
+        else:
+            self.ser.reset_board()
+            text = pre + self.ser.capture(timeout, until=r"Application: v1\.1")
+        log.write_text(text, encoding="utf-8")
+        return text
+
+    def capture_abort(self) -> None:
+        """Stop a capture that was started early when the cycle ends before the update."""
+        if self._tshark:
+            self._tshark.terminate()
+            try:
+                self._tshark.wait(10)
+            except subprocess.TimeoutExpired:
+                self._tshark.kill()
+            self._tshark = None
 
     def capture_stop(self) -> str:
         time.sleep(1.0)
@@ -396,6 +513,7 @@ class LocalRig(_BaseRig):
             cmd += ["-e", f]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         shutil.copy(self._pcap, self.ctx.sub("raw") / f"cycle-{self._label}-{self._stamp}.pcap")
+        self._tshark = None
         return r.stdout
 
     def gateway_record(self) -> dict | None:
@@ -515,6 +633,8 @@ def main(argv=None) -> int:
     ap.add_argument("--gateway-url", help="Table 3: the Pi's artifact server, e.g. http://192.168.100.50:8000")
     ap.add_argument("--static-ram-bytes", type=int,
                     help="Table 2 RAM column: the updater's static RAM increment from the SOP 4 report of the exact firmware flashed")
+    ap.add_argument("--static-ram-naked-bytes", type=int,
+                    help="scenario N: the naked updater's static RAM increment over the Wi-Fi-only control (from the build sizes)")
     ap.add_argument("--seed", type=int, default=20261015)
     ap.add_argument("--dry-run", action="store_true", help="print the plan and touch nothing")
     args = ap.parse_args(argv)
@@ -530,14 +650,19 @@ def main(argv=None) -> int:
         ap.error("--table3 needs --gateway-url")
     if not args.table3 and not args.serial:
         ap.error("--serial is required for Scenarios A and B")
+    if "N" in scenarios and args.static_ram_naked_bytes is None:
+        ap.error("--static-ram-naked-bytes is required for scenario N")
     if not args.table3 and args.static_ram_bytes is None:
         ap.error("--static-ram-bytes is required for Scenarios A and B (take it from the SOP 4 report of the flashed firmware)")
     ctx = RunContext(Path(args.run).resolve()) if args.run else RunContext.new()
     store = TrialStore(ctx.dir / "campaign" / ("table3.csv" if args.table3 else "trials.csv"))
     git = ctx.meta.get("git_commit", "")
     ram = static_ram_kb(args.static_ram_bytes) if args.static_ram_bytes is not None else None
+    if "N" in scenarios:
+        ram = {"A": ram, "B": ram, "N": static_ram_kb(args.static_ram_naked_bytes)}
     rig = (GatewayRig(ctx, gateway_url=args.gateway_url, lan_ip=args.lan_ip, firmware_dir=args.firmware_dir) if args.table3
-           else LocalRig(ctx, serial_port=args.serial, lan_ip=args.lan_ip, iface=args.iface, firmware_dir=args.firmware_dir))
+           else LocalRig(ctx, serial_port=args.serial, lan_ip=args.lan_ip, iface=args.iface, firmware_dir=args.firmware_dir,
+                         naked="N" in scenarios))
     with rig:
         run_campaign(rig, store, schedule, ram, with_device=not args.table3, git_revision=git)
     print(f"Cycles: {store.path}")
