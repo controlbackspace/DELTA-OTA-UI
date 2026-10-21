@@ -26,3 +26,14 @@ Compressed copy of the local, git-ignored `sop-results/` folder, for backup.
 - Not included: the Chapter 4 and 5 draft, the local Hardhat node logs (public development accounts) and throwaway TLS private keys.
 - Not repeated here: the Scenario A/B campaign, the pilots and the Scenario C/D/E data (`sop-results-2026-10-19.zip`), the Table 3 run (`sop-results-table3-and-tables-2026-10-19.zip`).
 - Regenerate the statistics, tables and figures with `python -m sop.chapter4 ... --tables` and `python -m sop.figures ...` (commands in `experiment-paper-tables/README.md`).
+
+## Addition (2026-10-21): the Chapter 3 comparators, the confirmation run and the final data pack
+
+- `sop-results-baselines-and-final-pack-2026-10-21.zip`: 488 files, 30478 KiB, sha256 `c7701acdc856af0874c0437000bfb8c8118030c004f70c8d50f2b423c3a6ea2e`
+- Contents: `baselines-H-full/` (HTTPS full binary, 63 downloads in one boot, capture and serial log), `baselines-N-full/` (the A and naked-CoAP campaign),
+  `confirm-AB-fixed-harness/` (20-pair A/B confirmation run on the corrected harness), the two pilots (`baselines-H-pilot/`, `baselines-N-pilot/`), and the regenerated
+  data pack `experiment-paper-tables/` (README, SOP map, defense Q&A, STATISTICS, BASELINES and BASELINES-SPEC, the approved table documents, `data/`, seven figures).
+  This supersedes the data-pack copy of `sop-results-sop4-and-data-pack-2026-10-19.zip` and the table documents of the earlier additions.
+- Not included: the Chapter 4 and 5 draft, scratch work folders, local Hardhat node logs (public development accounts) and throwaway TLS private keys.
+- Not repeated: the A/B campaign, pilots and Scenarios C/D/E (`sop-results-2026-10-19.zip`), the Table 3 run (`sop-results-table3-and-tables-2026-10-19.zip`), `sop4-supporting-data/` (`sop-results-sop4-and-data-pack-2026-10-19.zip`).
+- Firmware for H and N: the firmware repository, commit `8ddd449`, tag `baselines-fw-1` (separate environments; the standard `factory` code is unchanged).
