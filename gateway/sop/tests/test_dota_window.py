@@ -1,4 +1,5 @@
 import random
+import struct
 import unittest
 import zlib
 
@@ -68,6 +69,31 @@ class DotaWindowTests(unittest.TestCase):
         dota[5] = 8
         with self.assertRaises(ValueError):
             ds.apply_dota(self.old, bytes(dota))
+
+    def test_a_corrupt_compressed_block_raises_valueerror(self):
+        """bz2 signals corruption as OSError and truncation as ValueError; the module
+        normalises both to its own ValueError so callers see one convention."""
+        garbage = bytearray(self.patch)
+        garbage[40] ^= 0xFF                             # inside the bzip2 control block
+        for bad in (bytes(garbage), self.patch[:-10]):  # corrupt, then truncated
+            with self.assertRaisesRegex(ValueError, "corrupt BSDIFF40 compressed block"):
+                ds.to_dota(bad)
+
+    def test_a_stream_too_short_for_the_header_raises_valueerror(self):
+        """A truncated header reached struct.unpack_from and raised struct.error before."""
+        truncated = ds.full_image_to_dota(b"x" * 50)[:ds.HEADER.size - 1]
+        with self.assertRaisesRegex(ValueError, "header alone needs"):
+            ds.apply_dota(b"", truncated)
+
+    def test_a_corrupt_or_exhausted_body_raises_valueerror(self):
+        """A bad deflate body escaped as zlib.error, and a header promising more than the
+        body holds escaped as struct.error. Both are ValueError now."""
+        with self.assertRaisesRegex(ValueError, "corrupt deflate body"):
+            ds.apply_dota(b"", ds.HEADER.pack(ds.MAGIC, 1, 12, 100) + b"garbage!" * 8)
+        tampered = bytearray(ds.full_image_to_dota(b"payload" * 30))
+        struct.pack_into("<I", tampered, 8, 10_000_000)      # promise more than it holds
+        with self.assertRaisesRegex(ValueError, "records exhausted"):
+            ds.apply_dota(b"", bytes(tampered))
 
     def test_a_4kb_window_costs_little_on_a_delta(self):
         small = len(ds.to_dota(self.patch))

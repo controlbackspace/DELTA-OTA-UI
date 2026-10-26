@@ -1,38 +1,121 @@
-"""DOTA: the device-side delta stream format (bsdiff semantics, ESP32-sized).
+"""DOTA delta-stream codec - the gateway side of the gateway-to-device update format.
 
-Why a second format: releases are published on-chain as BSDIFF40 patches
-(bsdiff4). BSDIFF40 compresses its three blocks with bzip2 level 9, whose
-decompressor needs megabytes of RAM - impossible on an ESP32 (~320 KB). The
-gateway verifies the BSDIFF40 bytes against the on-chain golden hash FIRST,
-then re-packs the same bsdiff instructions into DOTA, which the device can
-decode in one streaming pass with the ROM's tinfl inflater. The deflate window
-is kept small (WINDOW_BITS = 12, 4 KB) so the device's ring dictionary - the
-largest RAM object of the updater - fits a Class 2 budget; on the real v1.0 ->
-v1.1 pair a 4 KB window costs nothing against 32 KB (see the SOP 1 report).
+=============================================================================================
+COMP 022 Software Engineering 2 - Program Documentation
+---------------------------------------------------------------------------------------------
+Program Title : DOTA delta-stream codec (delta_stream.py)
+Programmers   :
+System Design : Edge Gateway deploy unit - the gateway side of interface crossing 3
+                (gateway -> device, CoAP /patch). Answered in full below.
+Date Written  : 2026-10-01 (commit 050427b)
+Date Revised  : 2026-10-07 (commit 87bfdf1, 4 KB deflate window);
+                2026-10-26 (documentation pass, no change to the format)
+Purpose       : Re-pack a ledger-verified BSDIFF40 patch into a stream an ESP32 can decode
+                in one streaming pass inside a 4 KB window. Expanded under PURPOSE.
+Structures    : A 16-byte header plus repeated (add, copy, seek) records, decoded in one
+                streaming pass. Answered in full below.
+=============================================================================================
 
-Layout (all integers little-endian):
-  header, 16 bytes, NOT compressed:
-    0  4  magic  b"DOTA"
-    4  1  format version (1)
-    5  1  deflate window, log2 of bytes (12 = 4 KB). 0 = legacy stream (15, 32 KB)
-    6  2  reserved (zero)
-    8  4  u32 new_size   - exact length of the reconstructed image
-   12  4  reserved (zero)
-  body: raw deflate (zlib wbits=-window) of a record sequence:
-    u32 add   - bytes to produce as  old[oldpos+i] + diff[i]  (mod 256)
-    u32 copy  - bytes to copy verbatim from the record (bsdiff "extra")
-    i32 seek  - adjustment to oldpos after the record (may be negative)
-    add  diff bytes
-    copy extra bytes
-  Records repeat until new_size bytes have been produced.
+PURPOSE
+    Why a second format exists: releases are published on-chain as BSDIFF40 patches
+    (bsdiff4). BSDIFF40 compresses its three blocks with bzip2 level 9, whose decompressor
+    needs megabytes of RAM - impossible on an ESP32 (~320 KB). The gateway verifies the
+    BSDIFF40 bytes against the on-chain golden hash FIRST, then re-packs the same bsdiff
+    instructions into DOTA, which the device can decode in one streaming pass with the ROM's
+    tinfl inflater. The deflate window is kept small (WINDOW_BITS = 12, 4 KB) so the device's
+    ring dictionary - the largest RAM object of the updater - fits a Class 2 budget; on the
+    real v1.0 -> v1.1 pair a 4 KB window costs nothing against 32 KB (see the SOP 1 report).
 
-A device refuses a stream whose window is larger than its dictionary; a device
-with a larger dictionary decodes a smaller window, and older devices (which read
-only the magic and the version byte) ignore byte 5, so the format stays v1.
+WHERE THE PROGRAM FITS IN THE GENERAL SYSTEM DESIGNS
+    Deploy unit: Edge Gateway (see the deploy-unit table in documentations/ARCHITECTURE.md).
+    This module implements the gateway half of interface crossing 3, "gateway -> device"
+    (CoAP/UDP :5683). It owns the format and nothing else: it opens no socket, reads no
+    configuration and touches no disk, which is what makes it testable on a workstation.
 
-Semantics are exactly bspatch's: after a record, oldpos += add + seek; an
-old index outside [0, old_size) contributes 0 (the diff byte is used as is).
-The device reads `old` from the ota_1 backup of the running app.
+        ledger poll -> download -> golden-hash verify -> to_dota() -> encrypt_blocks()
+                                                             |              |
+                                                   artifacts/dota_*.bin   AES-CCM block
+                                                                          frames served on
+                                                                          CoAP /patch
+                                                                               |
+                                                                  ESP32 factory updater:
+                                                                  DeltaDecoder, which
+                                                                  mirrors apply_dota below
+
+    main_gateway.py calls to_dota() inside its release loop, between hash verification and
+    block framing; a ValueError raised here makes the gateway refuse to serve the release.
+    apply_dota() is the reference decoder the firmware's DeltaDecoder class mirrors (firmware
+    repository, src/factory/main.cpp), so WINDOW_BITS here must stay less than or equal to
+    the firmware's DeltaDecoder::DICT_BITS, which is also 12. The SOP 1 and SOP 2 measurement
+    runs (gateway/sop/sop1.py, gateway/sop/sop2.py) import this module directly.
+
+DATA STRUCTURES, ALGORITHMS, AND CONTROL
+
+  Data structures
+    Declared once, as struct.Struct specifications: HEADER and RECORD. All integers are
+    little-endian. HEADER and RECORD are struct.Struct objects rather than primitives:
+    stateless, never rebound, and so treated as constants.
+
+      header, 16 bytes, NOT compressed:
+        0  4  magic  b"DOTA"
+        4  1  format version (1)
+        5  1  deflate window, log2 of bytes (12 = 4 KB). 0 = legacy stream (15, 32 KB)
+        6  2  reserved (zero)
+        8  4  u32 new_size   - exact length of the reconstructed image
+       12  4  reserved (zero)
+      body: raw deflate (zlib wbits=-window) of a record sequence:
+        u32 add   - bytes to produce as  old[oldpos+i] + diff[i]  (mod 256)
+        u32 copy  - bytes to copy verbatim from the record (bsdiff "extra")
+        i32 seek  - adjustment to oldpos after the record (may be negative)
+        add  diff bytes
+        copy extra bytes
+      Records repeat until new_size bytes have been produced.
+
+  Algorithms
+    Encode, bsdiff40_to_dota():
+      1. Reject anything that is not a 32-byte BSDIFF40 header.
+      2. Read the three sign-magnitude 64-bit lengths with _offtin - bsdiff's own integer
+         encoding, where bit 63 is a sign bit rather than two's complement.
+      3. bunzip2 the control, diff and extra blocks.
+      4. Walk the control block in 24-byte entries, slicing diff and extra into
+         (add_diff, extra, seek) records and range-checking every entry.
+      5. Cross-check that the records produce exactly new_size bytes, then deflate the
+         record sequence through _encode.
+    Decode, apply_dota(): inflate the body, then walk records, producing `add` bytes as
+    old[oldpos+i] + diff[i] (mod 256) and copying `copy` bytes verbatim, advancing oldpos by
+    add + seek after each record. Semantics are exactly bspatch's. An old index outside
+    [0, old_size) contributes 0, so the diff byte is used as is. The device reads `old` from
+    the ota_1 backup of the running app.
+    Full image, full_image_to_dota(): one copy-only record, used by the bench DELTA_PAYLOAD
+    path when there is no patch to re-pack.
+
+  Control
+    One decision point, one chokepoint, one failure convention:
+      - to_dota() is the only entry point a caller needs: BSDIFF40 patches are re-packed,
+        anything else is treated as a full image.
+      - _encode() is the single place that compresses and the single place that validates the
+        window, so every encoder path shares one check.
+      - Every failure raises ValueError carrying observed-against-expected values. The module
+        never prints and never returns a sentinel; policy belongs to the caller, which logs
+        the operator-facing line and refuses to serve the release.
+      - Forward compatibility: a device refuses a stream whose window is larger than its
+        dictionary; a device with a larger dictionary decodes a smaller window; and older
+        devices, which read only the magic and the version byte, ignore byte 5, so the format
+        stays v1.
+
+  The error convention is total
+    Every failure, on either side of the format, raises ValueError carrying
+    observed-against-expected values; nothing returns a sentinel and nothing prints. Library
+    exceptions that would otherwise escape are converted where they arise: bz2 failures on a
+    corrupt BSDIFF40 block, zlib failures on a corrupt deflate body, and both
+    struct.unpack_from calls - which malformed input could drive past the end of a buffer -
+    are guarded by explicit length checks first.
+
+STYLE
+    Four-space indentation, ASCII only, lines of at most 100 characters (the repository
+    carries no linter configuration, so this limit is a convention declared here). Module
+    state is seven UPPER_CASE constants and nothing else: no global variables and no `global`
+    statements anywhere in the file.
 """
 import bz2
 import struct
@@ -59,6 +142,11 @@ def _offtin(raw: bytes) -> int:
 
 
 def _encode(new_size: int, records, window_bits: int = WINDOW_BITS) -> bytes:
+    """Deflate a record sequence behind a DOTA header - the one compression chokepoint.
+
+    Every encoder path goes through here, so the window is validated once, in one place.
+    `records` is an iterable of (add_diff, extra, seek) triples. Returns header + body.
+    """
     if not 9 <= window_bits <= 15:
         raise ValueError("deflate window must be 2^9 .. 2^15 bytes")
     comp = zlib.compressobj(9, zlib.DEFLATED, -window_bits)
@@ -80,9 +168,16 @@ def bsdiff40_to_dota(patch: bytes, window_bits: int = WINDOW_BITS) -> bytes:
     new_size = _offtin(patch[24:32])
     if ctrl_len < 0 or diff_len < 0 or new_size < 0 or 32 + ctrl_len + diff_len > len(patch):
         raise ValueError("corrupt BSDIFF40 header")
-    ctrl = bz2.decompress(patch[32:32 + ctrl_len])
-    diff = bz2.decompress(patch[32 + ctrl_len:32 + ctrl_len + diff_len])
-    extra = bz2.decompress(patch[32 + ctrl_len + diff_len:])
+    # bz2 reports corruption three different ways: OSError for a bad stream, ValueError for
+    # a truncated one, EOFError at an unexpected end. Normalise them, so every failure in this
+    # module is a ValueError. An empty block decompresses to b"" without raising at all; the
+    # length checks below catch that case instead.
+    try:
+        ctrl = bz2.decompress(patch[32:32 + ctrl_len])
+        diff = bz2.decompress(patch[32 + ctrl_len:32 + ctrl_len + diff_len])
+        extra = bz2.decompress(patch[32 + ctrl_len + diff_len:])
+    except (OSError, EOFError, ValueError) as exc:
+        raise ValueError(f"corrupt BSDIFF40 compressed block: {exc}") from exc
     if len(ctrl) % 24:
         raise ValueError("corrupt BSDIFF40 control block")
 
@@ -122,6 +217,8 @@ def apply_dota(old: bytes, dota: bytes, dict_bits: int = 15) -> bytes:
     `dict_bits` is the decoder's ring-dictionary size (log2 bytes). Like the device,
     it refuses a stream compressed with a larger window instead of decoding garbage.
     """
+    if len(dota) < HEADER.size:
+        raise ValueError(f"stream is {len(dota)} B, the header alone needs {HEADER.size} B")
     magic, version, window_bits, new_size = HEADER.unpack_from(dota)
     if magic != MAGIC or version != FORMAT_VERSION:
         raise ValueError("not a DOTA v1 stream")
@@ -129,21 +226,33 @@ def apply_dota(old: bytes, dota: bytes, dict_bits: int = 15) -> bytes:
     if not 9 <= window_bits <= 15:
         raise ValueError(f"bad deflate window 2^{window_bits}")
     if window_bits > dict_bits:
-        raise ValueError(f"stream needs a 2^{window_bits} B window, decoder dictionary is 2^{dict_bits} B")
-    body = zlib.decompress(dota[HEADER.size:], -window_bits)
+        raise ValueError(f"stream needs a 2^{window_bits} B window, "
+                         f"decoder dictionary is 2^{dict_bits} B")
+    try:
+        body = zlib.decompress(dota[HEADER.size:], -window_bits)
+    except zlib.error as exc:
+        raise ValueError(f"corrupt deflate body: {exc}") from exc
+    # Loop invariants: `out` grows to exactly new_size bytes and is never rewound; `pos` is the
+    # read cursor into the inflated body; `oldpos` is the cursor into the base image, advanced
+    # by add + seek once per record.
     out = bytearray()
     pos = oldpos = 0
     while len(out) < new_size:
+        # One record: a fixed-size header, then `add` diff bytes, then `copy` verbatim bytes.
+        if pos + RECORD.size > len(body):
+            raise ValueError(f"stream ends after {len(out)} of {new_size} B: records exhausted")
         add, copy, seek = RECORD.unpack_from(body, pos)
         pos += RECORD.size
         if len(out) + add + copy > new_size or pos + add + copy > len(body):
             raise ValueError("record overruns the stream")
         for i in range(add):
+            # An index outside the old image contributes 0, so the diff byte is used as is.
+            # The firmware's _readOld() gets the same effect by zeroing its buffer first.
             o = oldpos + i
             base = old[o] if 0 <= o < len(old) else 0
             out.append((body[pos + i] + base) & 0xFF)
         pos += add
-        out += body[pos:pos + copy]
+        out += body[pos:pos + copy]       # "extra" bytes: no base, copied straight out
         pos += copy
-        oldpos += add + seek
+        oldpos += add + seek              # bspatch semantics: seek adjusts the base cursor
     return bytes(out)
