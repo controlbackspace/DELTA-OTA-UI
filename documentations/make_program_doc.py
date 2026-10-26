@@ -72,11 +72,22 @@ def parse_header(doc):
             banner[current_banner].append(line.strip())
             continue
         if current_section is not None:
-            sections[current_section].append(line[4:] if line.startswith("    ") else line)
+            sections[current_section].append(line)
     return (summary,
             {k: " ".join(v).strip() for k, v in banner.items()},
-            {k: "\n".join(v).strip("\n") for k, v in sections.items()},
+            {k: dedent(v) for k, v in sections.items()},
             order)
+
+
+def dedent(block):
+    """Strip the indent the whole block shares, so sub-headings keep their hierarchy.
+
+    Stripping a fixed four spaces would flatten a sub-heading indented by two onto the
+    same column as the body indented by four.
+    """
+    filled = [line for line in block if line.strip()]
+    shared = min((len(line) - len(line.lstrip()) for line in filled), default=0)
+    return "\n".join(line[shared:] if line.strip() else "" for line in block).strip("\n")
 
 
 def validate(banner, sections):

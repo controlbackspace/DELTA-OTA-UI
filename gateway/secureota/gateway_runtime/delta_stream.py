@@ -51,65 +51,63 @@ WHERE THE PROGRAM FITS IN THE GENERAL SYSTEM DESIGNS
 
 DATA STRUCTURES, ALGORITHMS, AND CONTROL
 
-  Data structures
-    Declared once, as struct.Struct specifications: HEADER and RECORD. All integers are
-    little-endian. HEADER and RECORD are struct.Struct objects rather than primitives:
-    stateless, never rebound, and so treated as constants.
+  The idea in plain terms
+    A firmware update normally ships a whole new program. This module ships only what
+    changed between the old version and the new one, packaged so that a small device can
+    unpack it unaided. On the v1.0 to v1.1 pair the device receives about 23 KB instead of
+    the whole 282 KB image.
 
-      header, 16 bytes, NOT compressed:
-        0  4  magic  b"DOTA"
+  Data structures
+    A DOTA stream is a 16-byte header followed by a compressed list of instructions for
+    turning the old image into the new one.
+
+      header, 16 bytes, not compressed:
+        0  4  magic b"DOTA", marks the format
         4  1  format version (1)
-        5  1  deflate window, log2 of bytes (12 = 4 KB). 0 = legacy stream (15, 32 KB)
+        5  1  memory the decoder needs, as log2 bytes (12 = 4 KB; 0 = an older 32 KB stream)
         6  2  reserved (zero)
-        8  4  u32 new_size   - exact length of the reconstructed image
+        8  4  new_size: exact length of the finished image
        12  4  reserved (zero)
-      body: raw deflate (zlib wbits=-window) of a record sequence:
-        u32 add   - bytes to produce as  old[oldpos+i] + diff[i]  (mod 256)
-        u32 copy  - bytes to copy verbatim from the record (bsdiff "extra")
-        i32 seek  - adjustment to oldpos after the record (may be negative)
-        add  diff bytes
-        copy extra bytes
-      Records repeat until new_size bytes have been produced.
+      body, deflate-compressed, one instruction at a time:
+        add   how many bytes to build from the old image plus a correction
+        copy  how many bytes to take straight from the stream
+        seek  how far to move the reading position in the old image afterwards
+      followed by those add and copy bytes themselves. Instructions repeat until new_size
+      bytes exist.
+
+    HEADER and RECORD are struct.Struct constants that declare this layout once, so the
+    encoder and the decoder cannot disagree about it.
 
   Algorithms
-    Encode, bsdiff40_to_dota():
-      1. Reject anything that is not a 32-byte BSDIFF40 header.
-      2. Read the three sign-magnitude 64-bit lengths with _offtin - bsdiff's own integer
-         encoding, where bit 63 is a sign bit rather than two's complement.
-      3. bunzip2 the control, diff and extra blocks.
-      4. Walk the control block in 24-byte entries, slicing diff and extra into
-         (add_diff, extra, seek) records and range-checking every entry.
-      5. Cross-check that the records produce exactly new_size bytes, then deflate the
-         record sequence through _encode.
-    Decode, apply_dota(): inflate the body, then walk records, producing `add` bytes as
-    old[oldpos+i] + diff[i] (mod 256) and copying `copy` bytes verbatim, advancing oldpos by
-    add + seek after each record. Semantics are exactly bspatch's. An old index outside
-    [0, old_size) contributes 0, so the diff byte is used as is. The device reads `old` from
-    the ota_1 backup of the running app.
-    Full image, full_image_to_dota(): one copy-only record, used by the bench DELTA_PAYLOAD
-    path when there is no patch to re-pack.
+    Encoding, bsdiff40_to_dota(), re-packages the patch the release builder produced. That
+    patch is compressed with bzip2, which needs megabytes of memory to unpack - more than
+    the ESP32 has - so the instructions are read out and re-compressed with deflate, which
+    the chip unpacks in a 4 KB buffer. The instructions themselves are unchanged; only the
+    wrapping is.
+
+    Decoding, apply_dota(), rebuilds the image. For each instruction: build `add` bytes
+    from the old image plus its corrections, copy `copy` bytes straight from the stream,
+    then move the old-image position by add + seek. Reading past the end of the old image
+    gives zero. This function is the written specification of the decoder; the ESP32
+    firmware performs the same steps in C++, reading the old image from its ota_1 backup.
+
+    full_image_to_dota() wraps a whole image as a single copy instruction, for bench runs
+    where there is no patch to re-package.
 
   Control
-    One decision point, one chokepoint, one failure convention:
-      - to_dota() is the only entry point a caller needs: BSDIFF40 patches are re-packed,
-        anything else is treated as a full image.
-      - _encode() is the single place that compresses and the single place that validates the
-        window, so every encoder path shares one check.
-      - Every failure raises ValueError carrying observed-against-expected values. The module
-        never prints and never returns a sentinel; policy belongs to the caller, which logs
-        the operator-facing line and refuses to serve the release.
-      - Forward compatibility: a device refuses a stream whose window is larger than its
-        dictionary; a device with a larger dictionary decodes a smaller window; and older
-        devices, which read only the magic and the version byte, ignore byte 5, so the format
-        stays v1.
-
-  The error convention is total
-    Every failure, on either side of the format, raises ValueError carrying
-    observed-against-expected values; nothing returns a sentinel and nothing prints. Library
-    exceptions that would otherwise escape are converted where they arise: bz2 failures on a
-    corrupt BSDIFF40 block, zlib failures on a corrupt deflate body, and both
-    struct.unpack_from calls - which malformed input could drive past the end of a buffer -
-    are guarded by explicit length checks first.
+    - to_dota() is the only entry point a caller needs: a patch is re-packaged, anything
+      else is treated as a whole image.
+    - _encode() is the only place that compresses, so the memory limit is checked once on
+      behalf of every path.
+    - Every failure raises ValueError stating what was expected and what arrived. The
+      module never prints and never returns an error code; the caller decides what to do,
+      and the gateway's decision is to refuse to serve the release.
+    - No foreign exception escapes: bz2 and zlib failures are converted where they arise,
+      and both struct.unpack_from calls are guarded by length checks first, so ValueError
+      is the only failure a caller has to handle.
+    - Old and new devices interoperate: a device refuses a stream that needs more memory
+      than it has, accepts one that needs less, and devices built before byte 5 existed
+      ignore it.
 
 STYLE
     Four-space indentation, ASCII only, lines of at most 100 characters (the repository
