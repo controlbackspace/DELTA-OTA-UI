@@ -1,119 +1,101 @@
-"""DOTA delta-stream codec - the gateway side of the gateway-to-device update format.
+"""DOTA delta-stream codec - turns a firmware patch into a stream a small device can decode.
 
 =============================================================================================
 COMP 022 Software Engineering 2 - Program Documentation
 ---------------------------------------------------------------------------------------------
 Program Title : DOTA delta-stream codec (delta_stream.py)
 Programmers   :
-System Design : Edge Gateway deploy unit - the gateway side of interface crossing 3
-                (gateway -> device, CoAP /patch). Answered in full below.
-Date Written  : 2026-10-01 (commit 050427b)
-Date Revised  : 2026-10-07 (commit 87bfdf1, 4 KB deflate window);
-                2026-10-26 (documentation pass, no change to the format)
-Purpose       : Re-pack a ledger-verified BSDIFF40 patch into a stream an ESP32 can decode
-                in one streaming pass inside a 4 KB window. Expanded under PURPOSE.
-Structures    : A 16-byte header plus repeated (add, copy, seek) records, decoded in one
-                streaming pass. Answered in full below.
+System Design : The payload format of the edge gateway, the machine that sits between the
+                release ledger and the fleet of devices. Answered in full below.
+Date Written  : 2026-10-01
+Date Revised  : 2026-10-07, when the compression window was reduced to 4 KB;
+                2026-10-26, a documentation pass that left the format unchanged
+Purpose       : Re-package a verified firmware patch into a stream that a decoder with
+                4 KB of working memory can rebuild in one pass. Answered in full below.
+Structures    : A sixteen-byte header followed by a compressed list of instructions.
+                Answered in full below.
 =============================================================================================
 
 PURPOSE
-    Why a second format exists: releases are published on-chain as BSDIFF40 patches
-    (bsdiff4). BSDIFF40 compresses its three blocks with bzip2 level 9, whose decompressor
-    needs megabytes of RAM - impossible on an ESP32 (~320 KB). The gateway verifies the
-    BSDIFF40 bytes against the on-chain golden hash FIRST, then re-packs the same bsdiff
-    instructions into DOTA, which the device can decode in one streaming pass with the ROM's
-    tinfl inflater. The deflate window is kept small (WINDOW_BITS = 12, 4 KB) so the device's
-    ring dictionary - the largest RAM object of the updater - fits a Class 2 budget; on the
-    real v1.0 -> v1.1 pair a 4 KB window costs nothing against 32 KB (see the SOP 1 report).
+    A firmware update normally ships an entire new program to the device. This module ships
+    only what changed between the old version and the new one, packaged so that a small
+    device can unpack it unaided. On the v1.0 to v1.1 pair used throughout the study, the
+    device receives about 23 KB instead of the whole 282 KB image.
+
+    A second format is needed because of memory. Patches are published in the standard
+    bsdiff format, which compresses its contents with bzip2, and a bzip2 decompressor needs
+    megabytes of working memory - far more than the 320 KB the target microcontroller has.
+    This module keeps the patch instructions exactly as they are and re-compresses them with
+    deflate instead, inside a window small enough that the decoder's dictionary, the largest
+    single object it holds in memory, fits the project's constrained-device budget. On the
+    real image pair that smaller window costs nothing in stream size.
 
 WHERE THE PROGRAM FITS IN THE GENERAL SYSTEM DESIGNS
-    Deploy unit: Edge Gateway (see the deploy-unit table in documentations/ARCHITECTURE.md).
-    This module implements the gateway half of interface crossing 3, "gateway -> device"
-    (CoAP/UDP :5683). It owns the format and nothing else: it opens no socket, reads no
-    configuration and touches no disk, which is what makes it testable on a workstation.
+    This module is the payload format of the edge gateway, the machine that sits between the
+    release ledger and the fleet of devices. It owns the format and nothing else: it opens no
+    network connection, reads no configuration and writes no files, which is what makes it
+    testable on a workstation with no hardware present.
 
-        ledger poll -> download -> golden-hash verify -> to_dota() -> encrypt_blocks()
-                                                             |              |
-                                                   artifacts/dota_*.bin   AES-CCM block
-                                                                          frames served on
-                                                                          CoAP /patch
-                                                                               |
-                                                                  ESP32 factory updater:
-                                                                  DeltaDecoder, which
-                                                                  mirrors apply_dota below
+    The gateway's release loop reaches this module once a release has been approved on the
+    ledger and the downloaded bytes have been checked against the hash recorded there. The
+    verified bytes are re-packaged here, and the block-encryption step that follows slices
+    the result into independently encrypted frames, which a device then requests one at a
+    time over its constrained-network protocol. If this module rejects a payload, the gateway
+    refuses to serve that release at all.
 
-    main_gateway.py calls to_dota() inside its release loop, between hash verification and
-    block framing; a ValueError raised here makes the gateway refuse to serve the release.
-    apply_dota() is the reference decoder the firmware's DeltaDecoder class mirrors (firmware
-    repository, src/factory/main.cpp), so WINDOW_BITS here must stay less than or equal to
-    the firmware's DeltaDecoder::DICT_BITS, which is also 12. The SOP 1 and SOP 2 measurement
-    runs (gateway/sop/sop1.py, gateway/sop/sop2.py) import this module directly.
+    The decoder in this module is also the written specification of the decoder on the
+    device: the updater resident in the device's factory partition performs the same steps in
+    C++, and the window this module compresses with must never exceed the dictionary size
+    that updater reserves. The project's measurement harness calls this module directly as
+    well, to time and size the conversion with no device attached.
 
 DATA STRUCTURES, ALGORITHMS, AND CONTROL
+    The data structure this module produces is called a DOTA stream, and it consists of a
+    sixteen-byte header followed by a compressed list of instructions for turning the old
+    image into the new one. The header is never compressed, so a device can read it before
+    committing any memory. Bytes 0 to 3 hold the characters DOTA, which mark the format; byte
+    4 holds the format version, currently 1; byte 5 records how much memory the decoder will
+    need, written as a power of two, so that a value of 12 means 4 KB while a value of 0
+    identifies an older stream that assumed 32 KB; bytes 6 and 7 are reserved and set to
+    zero; bytes 8 to 11 hold new_size, the exact length of the finished image; and bytes 12
+    to 15 are reserved and also zero.
 
-  The idea in plain terms
-    A firmware update normally ships a whole new program. This module ships only what
-    changed between the old version and the new one, packaged so that a small device can
-    unpack it unaided. On the v1.0 to v1.1 pair the device receives about 23 KB instead of
-    the whole 282 KB image.
+    The body that follows is deflate-compressed and holds one instruction after another until
+    new_size bytes of output exist. Each instruction begins with three numbers: add, the
+    number of bytes to build from the old image plus a correction; copy, the number of bytes
+    to take straight from the stream; and seek, how far to move the reading position in the
+    old image once the instruction is finished. The add and copy bytes themselves follow those
+    three numbers. Two constants, HEADER and RECORD, declare this layout once as struct.Struct
+    specifications, so the encoder and the decoder cannot disagree about it.
 
-  Data structures
-    A DOTA stream is a 16-byte header followed by a compressed list of instructions for
-    turning the old image into the new one.
+    Two algorithms work on that structure. Encoding, in bsdiff40_to_dota, re-packages a
+    published patch: the instructions are read out of the bzip2 container they arrive in and
+    re-compressed with deflate, which the device can unpack inside a 4 KB buffer. The
+    instructions themselves are never altered, only their wrapping. Decoding, in apply_dota,
+    rebuilds the image by working through the instructions in order: it builds add bytes from
+    the old image plus their corrections, copies copy bytes straight from the stream, and then
+    moves the old-image position forward by add plus seek. Reading past the end of the old
+    image simply yields zero. The device does the same, reading the old image from its backup
+    copy of the running application. A third function, full_image_to_dota, wraps a whole image
+    as a single copy instruction, for bench runs where there is no patch to re-package.
 
-      header, 16 bytes, not compressed:
-        0  4  magic b"DOTA", marks the format
-        4  1  format version (1)
-        5  1  memory the decoder needs, as log2 bytes (12 = 4 KB; 0 = an older 32 KB stream)
-        6  2  reserved (zero)
-        8  4  new_size: exact length of the finished image
-       12  4  reserved (zero)
-      body, deflate-compressed, one instruction at a time:
-        add   how many bytes to build from the old image plus a correction
-        copy  how many bytes to take straight from the stream
-        seek  how far to move the reading position in the old image afterwards
-      followed by those add and copy bytes themselves. Instructions repeat until new_size
-      bytes exist.
-
-    HEADER and RECORD are struct.Struct constants that declare this layout once, so the
-    encoder and the decoder cannot disagree about it.
-
-  Algorithms
-    Encoding, bsdiff40_to_dota(), re-packages the patch the release builder produced. That
-    patch is compressed with bzip2, which needs megabytes of memory to unpack - more than
-    the ESP32 has - so the instructions are read out and re-compressed with deflate, which
-    the chip unpacks in a 4 KB buffer. The instructions themselves are unchanged; only the
-    wrapping is.
-
-    Decoding, apply_dota(), rebuilds the image. For each instruction: build `add` bytes
-    from the old image plus its corrections, copy `copy` bytes straight from the stream,
-    then move the old-image position by add + seek. Reading past the end of the old image
-    gives zero. This function is the written specification of the decoder; the ESP32
-    firmware performs the same steps in C++, reading the old image from its ota_1 backup.
-
-    full_image_to_dota() wraps a whole image as a single copy instruction, for bench runs
-    where there is no patch to re-package.
-
-  Control
-    - to_dota() is the only entry point a caller needs: a patch is re-packaged, anything
-      else is treated as a whole image.
-    - _encode() is the only place that compresses, so the memory limit is checked once on
-      behalf of every path.
-    - Every failure raises ValueError stating what was expected and what arrived. The
-      module never prints and never returns an error code; the caller decides what to do,
-      and the gateway's decision is to refuse to serve the release.
-    - No foreign exception escapes: bz2 and zlib failures are converted where they arise,
-      and both struct.unpack_from calls are guarded by length checks first, so ValueError
-      is the only failure a caller has to handle.
-    - Old and new devices interoperate: a device refuses a stream that needs more memory
-      than it has, accepts one that needs less, and devices built before byte 5 existed
-      ignore it.
+    Control through the module is deliberately narrow. to_dota is the only entry point a
+    caller needs: a patch is re-packaged, and anything else is treated as a whole image.
+    _encode is the only place that compresses, so the memory limit is checked once on behalf
+    of every path that reaches it. Every failure raises a ValueError stating what was expected
+    and what actually arrived; the module never prints and never returns an error code,
+    because policy belongs to the caller, and the gateway's policy is to refuse to serve the
+    release. No foreign exception escapes either: bz2 and zlib failures are converted where
+    they arise, and both struct.unpack_from calls are guarded by length checks first, so
+    ValueError is the only failure a caller has to handle. Finally, old and new devices
+    interoperate: a device refuses a stream that needs more memory than it has, accepts one
+    that needs less, and devices built before byte 5 existed ignore it.
 
 STYLE
-    Four-space indentation, ASCII only, lines of at most 100 characters (the repository
-    carries no linter configuration, so this limit is a convention declared here). Module
-    state is seven UPPER_CASE constants and nothing else: no global variables and no `global`
-    statements anywhere in the file.
+    Four-space indentation, ASCII only, lines of at most 100 characters; the repository
+    carries no linter configuration, so this limit is a convention declared here. Module
+    state is seven named constants and nothing else: no global variables, no global
+    statements.
 """
 import bz2
 import struct

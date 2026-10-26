@@ -270,8 +270,8 @@ def honest_notes(m):
         "refactoring, and that is deliberate: the module is a pure byte transform called from "
         "the gateway's asyncio loop, from two measurement scripts and from the test suite, so "
         "any module state would make it non-reentrant across those callers. For contrast, the "
-        "repository does have a mutable global elsewhere, the `FAILURES` counter rebound via "
-        "`global` in `gateway/secureota/gateway_runtime/simulation/run_simulation.py`.",
+        "repository does have a mutable global elsewhere, a failure counter rebound via "
+        "`global` in the simulation driver used for bench runs without hardware.",
 
         "**No local-versus-global naming tension exists here.** With no globals, the "
         "convention reduces to UPPER_CASE constants, underscore-prefixed private helpers, and "
@@ -298,7 +298,7 @@ def honest_notes(m):
 
         "**Error messages versus error display.** This module raises and never prints, so it "
         "has no user-facing output of its own. The operator-facing line is emitted by the "
-        "caller, `main_gateway.py`, which is outside this deliverable.",
+        "caller, the gateway's release loop, which is outside this deliverable.",
 
         "**Considerations met without effort, stated plainly:** function length (nothing near "
         "a contested threshold), indentation (shallow nesting), and spacing (no trailing "
@@ -404,8 +404,8 @@ def render(m, summary, banner, sections, tests):
     w("")
     w("## 4. Verification")
     w("")
-    w("The module is held by " + str(len(tests)) + " unit tests in " +
-      "`gateway/sop/tests/test_dota_window.py`:")
+    w("The module is held by " + str(len(tests)) +
+      " unit tests in the project's automated test suite:")
     w("")
     for name in tests:
         w("- `" + name + "`")
